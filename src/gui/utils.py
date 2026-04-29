@@ -29,3 +29,12 @@ def accounts_path() -> str | None:
     if not base:
         return None
     return os.path.join(base, "vry", "accounts.json")
+
+
+def stats_path() -> str | None:
+    """Return the path to ``stats.json`` written by ``src/stats.py``."""
+
+    base = os.getenv("APPDATA")
+    if not base:
+        return None
+    return os.path.join(base, "vry", "stats.json")

@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from src.constants import NUMBERTORANKS, version
 from src.gui.config_io import load_config
 from src.gui.pages._common import card, page_header
+from src.gui.stats_repo import StatsRepository
 from src.gui.workers.image_cache import ImageCache
 
 _ANSI_RE = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
@@ -69,6 +70,7 @@ PLAYER_COLUMNS: List[tuple[str, str]] = [
     ("name", "Name"),
     ("rank", "Rank"),
     ("rr", "RR"),
+    ("rrDelta", "±RR"),
     ("peakRank", "Peak"),
     ("skin", "Skin"),
     ("winPercentage", "Win %"),
@@ -140,12 +142,15 @@ class TrackerPage(QWidget):
     CHAT_LIMIT = 50
     AVATAR_SIZE = QSize(28, 28)
     SKIN_TOOLTIP_SIZE = QSize(420, 160)
+    # Glow ranks: Immortal 1+ and Radiant. NUMBERTORANKS index >= 24.
+    GLOW_RANK_THRESHOLD = 24
 
     def __init__(
         self,
         on_start,
         on_stop,
         image_cache: Optional[ImageCache] = None,
+        stats_repo: Optional[StatsRepository] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -156,6 +161,8 @@ class TrackerPage(QWidget):
         self._tracker_running = False
         self._image_cache = image_cache or ImageCache(self)
         self._image_cache.image_ready.connect(self._on_image_ready)
+        self._stats_repo = stats_repo or StatsRepository()
+        self._own_puuid: str = ""
 
         self._build_layout()
         self._update_buttons()
@@ -335,6 +342,12 @@ class TrackerPage(QWidget):
         self._update_connection_pill(connected)
 
     def apply_heartbeat(self, payload: Dict[str, Any]) -> None:
+        # Refresh stats.json once per heartbeat: the running tracker writes a
+        # new row to it whenever a match finishes.
+        self._stats_repo.reload()
+        own = str(payload.get("puuid") or "").strip()
+        if own:
+            self._own_puuid = own
         state = str(payload.get("state") or "MENUS").upper()
         self._update_state_pill(state)
 
@@ -435,10 +448,23 @@ class TrackerPage(QWidget):
 
         weapon_choice = str(cfg.get("weapon") or "Vandal")
         for player in rows:
+            puuid = str(player.get("puuid") or "")
+            last_match = self._stats_repo.last_match(puuid) if puuid else None
+            played_with = (
+                self._stats_repo.times_played_with(puuid) if puuid else 0
+            )
+            rr_delta = (
+                self._stats_repo.last_rr_delta(puuid) if puuid else None
+            )
+            tooltip = self._build_player_tooltip(
+                player, last_match, played_with, rr_delta
+            )
             row_items: List[QStandardItem] = []
             skin_url = self._skin_icon_url(player, weapon_choice)
             for key, _label in PLAYER_COLUMNS:
-                value = self._cell_for(key, player, table_flags, weapon_choice)
+                value = self._cell_for(
+                    key, player, table_flags, weapon_choice, rr_delta
+                )
                 item = QStandardItem(value)
                 item.setEditable(False)
                 if key == "rank":
@@ -449,6 +475,12 @@ class TrackerPage(QWidget):
                     color = _rank_color(value)
                     if color is not None:
                         item.setForeground(color)
+                if key == "rrDelta":
+                    if rr_delta is not None and rr_delta > 0:
+                        item.setForeground(QColor("#5fcf80"))
+                    elif rr_delta is not None and rr_delta < 0:
+                        item.setForeground(QColor("#ff4655"))
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if key in ("rr", "level", "kd", "headshotPercentage"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if key == "name":
@@ -470,6 +502,10 @@ class TrackerPage(QWidget):
                         pix = self._image_cache.request(card_url)
                         if pix is not None:
                             item.setIcon(QIcon(self._scale_avatar(pix)))
+                    if played_with > 0:
+                        item.setText(item.text() + f"  ×{played_with}")
+                    if tooltip:
+                        item.setToolTip(tooltip)
                 if key == "skin":
                     if skin_url:
                         item.setData(skin_url, SKIN_ICON_URL_ROLE)
@@ -478,6 +514,7 @@ class TrackerPage(QWidget):
                         self._image_cache.request(skin_url)
                 row_items.append(item)
             self._apply_team_color(row_items, player.get("team"))
+            self._apply_glow(row_items, player.get("rank"))
             self._player_model.appendRow(row_items)
 
     def _cell_for(
@@ -486,6 +523,7 @@ class TrackerPage(QWidget):
         player: Dict[str, Any],
         table_flags: Dict[str, Any],
         weapon_choice: str,
+        rr_delta: Optional[int],
     ) -> str:
         if key == "party":
             number = player.get("partyNumber")
@@ -496,6 +534,10 @@ class TrackerPage(QWidget):
             return self._format_name(player)
         if key == "skin":
             return self._skin_display_name(player, weapon_choice)
+        if key == "rrDelta":
+            if rr_delta is None:
+                return "—"
+            return f"+{rr_delta}" if rr_delta > 0 else str(rr_delta)
         if key == "rank":
             rank = player.get("rank")
             return self._format_rank(rank)
@@ -528,6 +570,92 @@ class TrackerPage(QWidget):
             value = player.get("level")
             return str(value) if value not in (None, "") else "\u2014"
         return ""
+
+    # ----------------------------------------------------- tooltip / glow
+    def _build_player_tooltip(
+        self,
+        player: Dict[str, Any],
+        last_match: Optional[Dict[str, Any]],
+        played_with: int,
+        rr_delta: Optional[int],
+    ) -> str:
+        bits: List[str] = []
+        name = self._format_name(player)
+        bits.append(f"<b>{name}</b>")
+
+        if played_with > 0:
+            bits.append(
+                f"<span style='color:#8b95a3'>Played with you "
+                f"{played_with} time{'s' if played_with != 1 else ''}</span>"
+            )
+
+        if last_match:
+            ago = self._format_ago(last_match.get("epoch"))
+            agent = _strip_ansi(str(last_match.get("agent") or ""))
+            map_name = _strip_ansi(str(last_match.get("map") or ""))
+            chunks: List[str] = []
+            if agent:
+                chunks.append(f"as <b>{agent}</b>")
+            if map_name:
+                chunks.append(f"on {map_name}")
+            if ago:
+                chunks.append(ago)
+            if chunks:
+                bits.append("Last seen: " + " ".join(chunks))
+
+        if rr_delta is not None:
+            sign = "+" if rr_delta > 0 else ""
+            color = (
+                "#5fcf80" if rr_delta > 0
+                else "#ff4655" if rr_delta < 0
+                else "#8b95a3"
+            )
+            bits.append(
+                f"Last RR change: <span style='color:{color}'>{sign}{rr_delta}</span>"
+            )
+
+        if len(bits) <= 1:
+            return ""
+        return "<br>".join(bits)
+
+    @staticmethod
+    def _format_ago(epoch: Any) -> str:
+        try:
+            then = float(epoch)
+        except (TypeError, ValueError):
+            return ""
+        if then <= 0:
+            return ""
+        seconds = max(0, int(time.time() - then))
+        if seconds < 60:
+            return f"{seconds}s ago"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
+
+    def _apply_glow(
+        self, items: List[QStandardItem], rank: Any
+    ) -> None:
+        if not isinstance(rank, int) or rank < self.GLOW_RANK_THRESHOLD:
+            return
+        # Subtle highlight + bold name to mark Immortal/Radiant rows. We can't
+        # do a real CSS box-shadow on a model item, but a brighter background
+        # + bold weight on the name column reads as "premium" without being
+        # noisy.
+        glow = QBrush(QColor(255, 242, 145, 26))  # radiant yellow tint
+        for item in items:
+            existing = item.background()
+            if existing.style() == Qt.BrushStyle.NoBrush:
+                item.setBackground(glow)
+        if items:
+            font = items[NAME_COLUMN].font()
+            font.setBold(True)
+            items[NAME_COLUMN].setFont(font)
 
     # ------------------------------------------------------- name fallback
     @staticmethod

@@ -26,9 +26,12 @@ from src.gui.config_io import load_config
 from src.gui.pages.about import AboutPage
 from src.gui.pages.accounts import AccountsPage
 from src.gui.pages.configuration import ConfigurationPage
+from src.gui.pages.history import HistoryPage
 from src.gui.pages.loadouts import LoadoutsPage
 from src.gui.pages.logs import LogsPage
+from src.gui.pages.stats import StatsPage
 from src.gui.pages.tracker import TrackerPage
+from src.gui.stats_repo import StatsRepository
 from src.gui.workers.global_hotkey import GlobalHotkey
 from src.gui.workers.image_cache import ImageCache
 from src.gui.workers.tracker_client import TrackerClient
@@ -41,6 +44,8 @@ class MainWindow(QMainWindow):
     NAV_ITEMS = (
         ("Tracker", "tracker"),
         ("Loadouts", "loadouts"),
+        ("History", "history"),
+        ("Stats", "stats"),
         ("Configuration", "config"),
         ("Accounts", "accounts"),
         ("Logs", "logs"),
@@ -59,6 +64,7 @@ class MainWindow(QMainWindow):
         self._tracker_runner = TrackerRunner(self)
         self._tracker_client = TrackerClient(self)
         self._image_cache = ImageCache(self)
+        self._stats_repo = StatsRepository()
         self._tray: Optional[QSystemTrayIcon] = None
         self._hotkey: Optional[GlobalHotkey] = None
         self._force_quit = False
@@ -67,8 +73,11 @@ class MainWindow(QMainWindow):
             on_start=self._on_start_tracker,
             on_stop=self._on_stop_tracker,
             image_cache=self._image_cache,
+            stats_repo=self._stats_repo,
         )
         self._loadouts_page = LoadoutsPage(image_cache=self._image_cache)
+        self._history_page = HistoryPage(stats_repo=self._stats_repo)
+        self._stats_page = StatsPage(stats_repo=self._stats_repo)
         self._config_page = ConfigurationPage()
         self._accounts_page = AccountsPage()
         self._logs_page = LogsPage()
@@ -77,6 +86,8 @@ class MainWindow(QMainWindow):
         self._page_widgets = {
             "tracker": self._tracker_page,
             "loadouts": self._loadouts_page,
+            "history": self._history_page,
+            "stats": self._stats_page,
             "config": self._config_page,
             "accounts": self._accounts_page,
             "logs": self._logs_page,
@@ -172,6 +183,7 @@ class MainWindow(QMainWindow):
         self._tracker_client.connected.connect(self._on_client_connected)
         self._tracker_client.disconnected.connect(self._on_client_disconnected)
         self._tracker_client.heartbeat.connect(self._tracker_page.apply_heartbeat)
+        self._tracker_client.heartbeat.connect(self._on_heartbeat)
         self._tracker_client.chat_message.connect(self._tracker_page.append_chat)
         self._tracker_client.match_loadout.connect(
             self._loadouts_page.apply_match_loadout
@@ -181,6 +193,20 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ slots
     def _show_page(self, index: int) -> None:
         self._stack.setCurrentIndex(index)
+        # Refresh stats-backed pages whenever the user lands on them so the
+        # latest finished match shows up without restarting the GUI.
+        widget = self._stack.widget(index)
+        if widget is self._history_page:
+            self._history_page.refresh()
+        elif widget is self._stats_page:
+            self._stats_page.refresh()
+
+    def _on_heartbeat(self, payload: dict) -> None:
+        own = str(payload.get("puuid") or "").strip()
+        if not own:
+            return
+        self._history_page.set_own_puuid(own)
+        self._stats_page.set_own_puuid(own)
 
     def _on_start_tracker(self) -> None:
         if self._tracker_runner.is_running():
