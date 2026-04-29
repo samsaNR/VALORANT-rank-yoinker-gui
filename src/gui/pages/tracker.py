@@ -453,10 +453,17 @@ class TrackerPage(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if key == "name":
                     item.setData(player.get("puuid"), PUUID_ROLE)
-                    item.setData(
-                        _strip_ansi(str(player.get("name") or "")),
-                        NAME_ROLE,
-                    )
+                    real_name = _strip_ansi(str(player.get("name") or ""))
+                    if self._is_hidden_name(real_name):
+                        # Italicise hidden names so it's obvious that the value
+                        # in this cell is the agent and not the actual riot id.
+                        font = item.font()
+                        font.setItalic(True)
+                        item.setFont(font)
+                        item.setForeground(QColor("#8b95a3"))
+                        item.setData("", NAME_ROLE)
+                    else:
+                        item.setData(real_name, NAME_ROLE)
                     card_url = str(player.get("playerCard") or "")
                     if card_url:
                         item.setData(card_url, PLAYER_CARD_URL_ROLE)
@@ -486,7 +493,7 @@ class TrackerPage(QWidget):
         if key == "agent":
             return _strip_ansi(str(player.get("agent") or "?"))
         if key == "name":
-            return _strip_ansi(str(player.get("name") or "?"))
+            return self._format_name(player)
         if key == "skin":
             return self._skin_display_name(player, weapon_choice)
         if key == "rank":
@@ -521,6 +528,31 @@ class TrackerPage(QWidget):
             value = player.get("level")
             return str(value) if value not in (None, "") else "\u2014"
         return ""
+
+    # ------------------------------------------------------- name fallback
+    @staticmethod
+    def _is_hidden_name(name: str) -> bool:
+        """Detect when Riot returns an empty riot-id for an incognito player.
+
+        ``names.py`` formats every player as ``f"{GameName}#{TagLine}"``. When a
+        player has streamer/incognito mode on, the name service returns empty
+        strings on both sides, which means the heartbeat carries the literal
+        string ``"#"`` (or whitespace around it). The console mirrors VALORANT
+        and shows the agent name instead — the GUI should do the same.
+        """
+
+        if not isinstance(name, str):
+            return True
+        cleaned = name.strip()
+        return cleaned in ("", "#")
+
+    @classmethod
+    def _format_name(cls, player: Dict[str, Any]) -> str:
+        name = _strip_ansi(str(player.get("name") or "")).strip()
+        if cls._is_hidden_name(name):
+            agent = _strip_ansi(str(player.get("agent") or "")).strip()
+            return agent or "Hidden"
+        return name
 
     # --------------------------------------------------------- skins / images
     @staticmethod
