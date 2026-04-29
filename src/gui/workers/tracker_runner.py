@@ -5,6 +5,11 @@ window and pipe its stdout/stderr to the GUI so the Logs page can mirror what
 the user used to see in the rich terminal output. Structured data (game
 state, players, chat) is consumed through the websocket server that the
 tracker exposes on the configured port.
+
+We use :mod:`subprocess` (rather than ``QProcess``) because PySide6 does not
+expose ``QProcess.setCreateProcessArgumentsModifier`` — that method only
+exists in PyQt — and we still need ``CREATE_NO_WINDOW`` on Windows to avoid
+a stray console window popping up next to the GUI.
 """
 
 from __future__ import annotations
@@ -13,9 +18,15 @@ import os
 import platform
 import subprocess
 import sys
+import threading
 from typing import List, Optional
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, Signal
+
+
+# Windows constant; harmless to define on other platforms.
+CREATE_NO_WINDOW = 0x08000000
+
 
 from src.gui.utils import repo_root
 
@@ -30,14 +41,14 @@ class TrackerRunner(QObject):
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
-        self._process: Optional[QProcess] = None
+        self._process: Optional[subprocess.Popen[str]] = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------ lifecycle
     def is_running(self) -> bool:
-        return (
-            self._process is not None
-            and self._process.state() != QProcess.ProcessState.NotRunning
-        )
+        proc = self._process
+        return proc is not None and proc.poll() is None
 
     def start(self) -> bool:
         if self.is_running():
@@ -50,38 +61,66 @@ class TrackerRunner(QObject):
             )
             return False
 
-        process = QProcess(self)
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        process.setWorkingDirectory(repo_root())
-        env = process.processEnvironment()
-        env.insert("PYTHONIOENCODING", "utf-8")
-        env.insert("PYTHONUNBUFFERED", "1")
-        process.setProcessEnvironment(env)
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
 
-        process.readyReadStandardOutput.connect(self._on_stdout)
-        process.errorOccurred.connect(self._on_error)
-        process.finished.connect(self._on_finished)
-
+        creationflags = 0
+        startupinfo = None
         if platform.system() == "Windows":
-            # Hide the spawned console window — the GUI is the front-end.
-            process.setCreateProcessArgumentsModifier(_hide_console_modifier)
+            creationflags = CREATE_NO_WINDOW
+            # Belt-and-suspenders: also hide the window via STARTUPINFO in
+            # case the executable was built without the console subsystem
+            # being suppressed.
+            startupinfo = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined]
+            startupinfo.wShowWindow = 0  # SW_HIDE
 
-        process.start(program, arguments)
-        if not process.waitForStarted(3000):
-            self.error.emit("Failed to launch the tracker process.")
+        try:
+            process = subprocess.Popen(
+                [program, *arguments],
+                cwd=repo_root(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                creationflags=creationflags,
+                startupinfo=startupinfo,
+                bufsize=1,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as exc:
+            self.error.emit(f"Failed to launch the tracker process: {exc}")
             return False
 
         self._process = process
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name="TrackerRunner-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
         self.started.emit()
         return True
 
     def stop(self) -> None:
-        if not self.is_running() or self._process is None:
+        proc = self._process
+        if proc is None or proc.poll() is not None:
             return
-        self._process.terminate()
-        if not self._process.waitForFinished(3000):
-            self._process.kill()
-            self._process.waitForFinished(2000)
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+        except OSError as exc:
+            self.error.emit(f"Failed to stop the tracker process: {exc}")
 
     # -------------------------------------------------------------- helpers
     def _build_command(self) -> tuple[Optional[str], List[str]]:
@@ -98,26 +137,26 @@ class TrackerRunner(QObject):
         return None, []
 
     # ---------------------------------------------------------------- slots
-    def _on_stdout(self) -> None:
-        if self._process is None:
+    def _reader_loop(self) -> None:
+        proc = self._process
+        if proc is None or proc.stdout is None:
             return
-        data = bytes(self._process.readAllStandardOutput()).decode(
-            "utf-8", errors="replace"
-        )
-        if data:
-            self.output_received.emit(data)
-
-    def _on_error(self, _err: QProcess.ProcessError) -> None:
-        if self._process is None:
-            return
-        self.error.emit(self._process.errorString())
-
-    def _on_finished(self, code: int, _status: QProcess.ExitStatus) -> None:
-        self.stopped.emit(int(code))
-        self._process = None
-
-
-def _hide_console_modifier(args):  # pragma: no cover - Windows only
-    """QProcess hook to mark the child as a hidden window on Windows."""
-    args["flags"] |= 0x08000000  # CREATE_NO_WINDOW
-    return args
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                if not line:
+                    break
+                # Qt queues signal delivery across threads automatically.
+                self.output_received.emit(line)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.error.emit(f"Tracker output stream failed: {exc}")
+        finally:
+            try:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except OSError:
+                pass
+            rc = proc.wait()
+            with self._lock:
+                if self._process is proc:
+                    self._process = None
+            self.stopped.emit(int(rc))
