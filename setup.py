@@ -18,14 +18,22 @@ from src.constants import version
 build_exe_options = {
     "path": sys.path,
     "include_files":['configurator.bat', 'updatescript.bat'],
-    "packages": ["requests", "colr", "InquirerPy", "websockets", "pypresence", "nest_asyncio", "rich", "websocket_server"],
-    "excludes": ["tkinter", "test", "unittest", "pygments", "xmlrpc"]
+    "packages": ["requests", "colr", "InquirerPy", "websockets", "pypresence", "nest_asyncio", "rich", "websocket_server", "tkinter"],
+    "excludes": ["test", "unittest", "pygments", "xmlrpc"]
 }
 
 setup(
     name = "VALORANT rank yoinker",
     version = version,
     description='vRY - VALORANT rank yoinker',
-    executables = [Executable("main.py", icon="./assets/Logo.ico", target_name="vry.exe")],
+    executables = [
+        Executable("main.py", icon="./assets/Logo.ico", target_name="vry.exe"),
+        Executable(
+            "gui.py",
+            icon="./assets/Logo.ico",
+            target_name="vry-gui.exe",
+            base="Win32GUI" if sys.platform == "win32" else None,
+        ),
+    ],
     options={"build_exe": build_exe_options}
 )

@@ -45,6 +45,10 @@
 3) Run **`INSTALL.bat`** file (or use `pip install -r requirements.txt` in the terminal)
 4) Run **`START.bat`** file (or use `python main.py` in the terminal)
 
+> Prefer a GUI launcher? Run **`START_GUI.bat`** (or `python gui.py`) to open a
+> menu with buttons for starting the tracker, editing `config.json` and
+> browsing saved accounts.
+
 ### Compiling from source:
 
 1) `pip install cx_Freeze`
