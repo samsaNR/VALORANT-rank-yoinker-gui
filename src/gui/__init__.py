@@ -1,5 +1,5 @@
-"""Tkinter-based GUI for VALORANT rank yoinker."""
+"""PySide6-based GUI for VALORANT rank yoinker."""
 
-from src.gui.app import VryGuiApp, run
+from src.gui.app import run
 
-__all__ = ["VryGuiApp", "run"]
+__all__ = ["run"]
