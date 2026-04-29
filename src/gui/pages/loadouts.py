@@ -35,6 +35,37 @@ def _strip_ansi(value: str) -> str:
     return _ANSI_RE.sub("", value) if isinstance(value, str) else value
 
 
+def _is_hidden_name(name: str) -> bool:
+    """``names.py`` formats every player as ``f"{GameName}#{TagLine}"``; an
+    incognito player ends up as just ``"#"``. We render the agent in that
+    case to mirror what VALORANT itself shows."""
+
+    if not isinstance(name, str):
+        return True
+    return name.strip() in ("", "#")
+
+
+def _agent_display_name(loadout: Dict[str, Any]) -> str:
+    """Best-effort extraction of the agent name from a loadout payload.
+
+    The matchLoadout payload doesn't carry the bare agent name, but it does
+    carry ``AgentArtworkName`` (e.g. ``"CypherArtwork"``) and the agent's
+    ``displayIcon`` URL. Either is enough to recover the name without a
+    second API call.
+    """
+
+    artwork = str(loadout.get("AgentArtworkName") or "").strip()
+    if artwork.endswith("Artwork"):
+        artwork = artwork[: -len("Artwork")]
+    if artwork:
+        return artwork
+    icon_url = str(loadout.get("Agent") or "")
+    # ``.../v1/agents/<uuid>/displayicon.png`` — no name in there, give up.
+    if "/agents/" in icon_url:
+        return ""
+    return ""
+
+
 class _SkinTile(QFrame):
     """Small card showing the icon and skin name for a single weapon."""
 
@@ -119,13 +150,30 @@ class _PlayerLoadoutCard(QFrame):
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
 
-        name = _strip_ansi(str(loadout.get("Name") or "Unknown"))
-        name_label = QLabel(name)
+        agent_name = _agent_display_name(loadout)
+        raw_name = _strip_ansi(str(loadout.get("Name") or "")).strip()
+        hidden = _is_hidden_name(raw_name)
+        if hidden:
+            display_name = agent_name or "Hidden"
+        else:
+            display_name = raw_name
+        name_label = QLabel(display_name)
         name_label.setObjectName("playerName")
+        if hidden:
+            font = name_label.font()
+            font.setItalic(True)
+            name_label.setFont(font)
+            name_label.setStyleSheet("color: #8b95a3;")
         text_col.addWidget(name_label)
 
         title = _strip_ansi(str(loadout.get("Title") or ""))
         meta_bits: List[str] = []
+        if hidden:
+            meta_bits.append("hidden")
+        elif agent_name:
+            # When the name IS visible, surface the agent next to the title so
+            # the card still answers "who's playing what" at a glance.
+            meta_bits.append(agent_name)
         if title:
             meta_bits.append(title)
         level = loadout.get("Level")
