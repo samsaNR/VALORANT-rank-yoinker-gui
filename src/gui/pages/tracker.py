@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.parse
+import webbrowser
 from collections import deque
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QStandardItem, QStandardItemModel
+from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt
+from PySide6.QtGui import (
+    QBrush,
+    QClipboard,
+    QColor,
+    QGuiApplication,
+    QIcon,
+    QPixmap,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -17,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -28,6 +40,7 @@ from PySide6.QtWidgets import (
 from src.constants import NUMBERTORANKS, version
 from src.gui.config_io import load_config
 from src.gui.pages._common import card, page_header
+from src.gui.workers.image_cache import ImageCache
 
 _ANSI_RE = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
 
@@ -57,11 +70,35 @@ PLAYER_COLUMNS: List[tuple[str, str]] = [
     ("rank", "Rank"),
     ("rr", "RR"),
     ("peakRank", "Peak"),
+    ("skin", "Skin"),
     ("winPercentage", "Win %"),
     ("headshotPercentage", "HS %"),
     ("kd", "K/D"),
     ("level", "Lvl"),
 ]
+
+NAME_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "name")
+SKIN_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "skin")
+
+# Custom Qt item-data roles used to ferry domain values through the model.
+PUUID_ROLE = Qt.ItemDataRole.UserRole + 1
+NAME_ROLE = Qt.ItemDataRole.UserRole + 2
+SKIN_ICON_URL_ROLE = Qt.ItemDataRole.UserRole + 3
+PLAYER_CARD_URL_ROLE = Qt.ItemDataRole.UserRole + 4
+
+# Team backgrounds (subtle tint applied to the row).
+TEAM_ROW_COLORS: Dict[str, QColor] = {
+    "Blue": QColor(58, 138, 232, 38),
+    "Red": QColor(255, 70, 85, 44),
+    "Yellow": QColor(240, 185, 56, 50),
+}
+
+TRACKER_GG_TEMPLATE = (
+    "https://tracker.gg/valorant/profile/riot/{name}/overview"
+)
+BLITZ_GG_TEMPLATE = (
+    "https://blitz.gg/valorant/profile/{name}/overview"
+)
 
 
 def _rank_color(rank_name: str) -> Optional[QColor]:
@@ -101,11 +138,14 @@ class TrackerPage(QWidget):
     """Live page that mirrors the rich console table inside the GUI."""
 
     CHAT_LIMIT = 50
+    AVATAR_SIZE = QSize(28, 28)
+    SKIN_TOOLTIP_SIZE = QSize(420, 160)
 
     def __init__(
         self,
         on_start,
         on_stop,
+        image_cache: Optional[ImageCache] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -114,6 +154,8 @@ class TrackerPage(QWidget):
         self._chat_history: Deque[Dict[str, Any]] = deque(maxlen=self.CHAT_LIMIT)
         self._connected = False
         self._tracker_running = False
+        self._image_cache = image_cache or ImageCache(self)
+        self._image_cache.image_ready.connect(self._on_image_ready)
 
         self._build_layout()
         self._update_buttons()
@@ -224,14 +266,25 @@ class TrackerPage(QWidget):
         self._player_table.setAlternatingRowColors(True)
         self._player_table.setSortingEnabled(True)
         self._player_table.verticalHeader().setVisible(False)
+        # Avatar / skin icon row needs a bit more breathing room.
+        self._player_table.verticalHeader().setDefaultSectionSize(34)
+        self._player_table.setIconSize(self.AVATAR_SIZE)
+        self._player_table.setMouseTracking(True)
+        self._player_table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self._player_table.customContextMenuRequested.connect(
+            self._on_table_context_menu
+        )
+        self._player_table.doubleClicked.connect(self._on_table_double_click)
         header_view = self._player_table.horizontalHeader()
         header_view.setStretchLastSection(False)
         header_view.setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
-        # Stretch the name column so long names get more breathing room.
+        # Stretch the name and skin columns so long values get more room.
         for index, (key, _) in enumerate(PLAYER_COLUMNS):
-            if key == "name":
+            if key in ("name", "skin"):
                 header_view.setSectionResizeMode(
                     index, QHeaderView.ResizeMode.Stretch
                 )
@@ -380,10 +433,12 @@ class TrackerPage(QWidget):
         self._players_empty.hide()
         self._players_badge.set_value(str(len(rows)))
 
+        weapon_choice = str(cfg.get("weapon") or "Vandal")
         for player in rows:
             row_items: List[QStandardItem] = []
+            skin_url = self._skin_icon_url(player, weapon_choice)
             for key, _label in PLAYER_COLUMNS:
-                value = self._cell_for(key, player, table_flags)
+                value = self._cell_for(key, player, table_flags, weapon_choice)
                 item = QStandardItem(value)
                 item.setEditable(False)
                 if key == "rank":
@@ -396,7 +451,26 @@ class TrackerPage(QWidget):
                         item.setForeground(color)
                 if key in ("rr", "level", "kd", "headshotPercentage"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if key == "name":
+                    item.setData(player.get("puuid"), PUUID_ROLE)
+                    item.setData(
+                        _strip_ansi(str(player.get("name") or "")),
+                        NAME_ROLE,
+                    )
+                    card_url = str(player.get("playerCard") or "")
+                    if card_url:
+                        item.setData(card_url, PLAYER_CARD_URL_ROLE)
+                        pix = self._image_cache.request(card_url)
+                        if pix is not None:
+                            item.setIcon(QIcon(self._scale_avatar(pix)))
+                if key == "skin":
+                    if skin_url:
+                        item.setData(skin_url, SKIN_ICON_URL_ROLE)
+                        item.setToolTip(self._skin_tooltip(value, skin_url))
+                        # Trigger lazy download so the tooltip is ready next time.
+                        self._image_cache.request(skin_url)
                 row_items.append(item)
+            self._apply_team_color(row_items, player.get("team"))
             self._player_model.appendRow(row_items)
 
     def _cell_for(
@@ -404,6 +478,7 @@ class TrackerPage(QWidget):
         key: str,
         player: Dict[str, Any],
         table_flags: Dict[str, Any],
+        weapon_choice: str,
     ) -> str:
         if key == "party":
             number = player.get("partyNumber")
@@ -412,6 +487,8 @@ class TrackerPage(QWidget):
             return _strip_ansi(str(player.get("agent") or "?"))
         if key == "name":
             return _strip_ansi(str(player.get("name") or "?"))
+        if key == "skin":
+            return self._skin_display_name(player, weapon_choice)
         if key == "rank":
             rank = player.get("rank")
             return self._format_rank(rank)
@@ -444,6 +521,165 @@ class TrackerPage(QWidget):
             value = player.get("level")
             return str(value) if value not in (None, "") else "\u2014"
         return ""
+
+    # --------------------------------------------------------- skins / images
+    @staticmethod
+    def _find_weapon_entry(
+        player: Dict[str, Any], weapon_choice: str
+    ) -> Optional[Dict[str, Any]]:
+        weapons = player.get("weapons") or {}
+        if not isinstance(weapons, dict):
+            return None
+        target = weapon_choice.strip().lower()
+        for entry in weapons.values():
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("weapon") or "").strip().lower() == target:
+                return entry
+        return None
+
+    @classmethod
+    def _skin_display_name(
+        cls, player: Dict[str, Any], weapon_choice: str
+    ) -> str:
+        entry = cls._find_weapon_entry(player, weapon_choice)
+        if entry is None:
+            return "\u2014"
+        name = entry.get("skinDisplayName") or entry.get("skin_displayName") or ""
+        name = _strip_ansi(str(name)).strip()
+        if not name:
+            return "\u2014"
+        # The API ships skins as "Reaver Vandal"; trim the trailing weapon name.
+        suffix = " " + weapon_choice
+        if name.lower().endswith(suffix.lower()):
+            name = name[: -len(suffix)].rstrip()
+        return name or "\u2014"
+
+    @classmethod
+    def _skin_icon_url(
+        cls, player: Dict[str, Any], weapon_choice: str
+    ) -> str:
+        entry = cls._find_weapon_entry(player, weapon_choice)
+        if entry is None:
+            return ""
+        url = entry.get("skinDisplayIcon") or entry.get("skin_displayIcon") or ""
+        return str(url) if url else ""
+
+    def _scale_avatar(self, pixmap: QPixmap) -> QPixmap:
+        return pixmap.scaled(
+            self.AVATAR_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _skin_tooltip(self, name: str, url: str) -> str:
+        # Qt accepts <img> in rich text tooltips when given a local file path
+        # (or a remote URL it can resolve synchronously). The image cache
+        # downloads to disk, so once cached we can point the tooltip at the
+        # file path. Until then, just render the name.
+        cached_path = self._image_cache._disk_path(url)  # noqa: SLF001 - intentional
+        import os as _os
+
+        if _os.path.exists(cached_path):
+            return (
+                f'<div style="padding:4px"><b>{name}</b><br>'
+                f'<img src="{cached_path}" width="{self.SKIN_TOOLTIP_SIZE.width()}"></div>'
+            )
+        return f"<b>{name}</b><br><i>loading skin preview\u2026</i>"
+
+    def _apply_team_color(
+        self, items: List[QStandardItem], team: Optional[str]
+    ) -> None:
+        if not team:
+            return
+        color = TEAM_ROW_COLORS.get(str(team).strip().capitalize())
+        if color is None:
+            return
+        brush = QBrush(color)
+        for item in items:
+            item.setBackground(brush)
+
+    # ---------------------------------------------------------- interactions
+    def _on_image_ready(self, url: str, pixmap: QPixmap) -> None:
+        """Refresh table cells whose deferred image just finished loading."""
+
+        for row in range(self._player_model.rowCount()):
+            name_item = self._player_model.item(row, NAME_COLUMN)
+            if name_item is not None and name_item.data(PLAYER_CARD_URL_ROLE) == url:
+                name_item.setIcon(QIcon(self._scale_avatar(pixmap)))
+            skin_item = self._player_model.item(row, SKIN_COLUMN)
+            if skin_item is not None and skin_item.data(SKIN_ICON_URL_ROLE) == url:
+                skin_item.setToolTip(
+                    self._skin_tooltip(skin_item.text(), url)
+                )
+
+    def _row_lookup(self, row: int) -> tuple[str, str]:
+        name_item = self._player_model.item(row, NAME_COLUMN)
+        if name_item is None:
+            return "", ""
+        name = str(name_item.data(NAME_ROLE) or name_item.text() or "")
+        puuid = str(name_item.data(PUUID_ROLE) or "")
+        return name, puuid
+
+    def _on_table_double_click(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        name, _ = self._row_lookup(index.row())
+        if not name or "#" not in name:
+            return
+        webbrowser.open(self._tracker_gg_url(name))
+
+    def _on_table_context_menu(self, point: QPoint) -> None:
+        index = self._player_table.indexAt(point)
+        if not index.isValid():
+            return
+        name, puuid = self._row_lookup(index.row())
+        if not name and not puuid:
+            return
+
+        menu = QMenu(self._player_table)
+        clipboard = QGuiApplication.clipboard()
+
+        copy_name = menu.addAction(f"Copy name: {name}" if name else "Copy name")
+        copy_name.setEnabled(bool(name))
+        copy_name.triggered.connect(
+            lambda: clipboard.setText(name, QClipboard.Mode.Clipboard)
+        )
+
+        copy_puuid = menu.addAction("Copy puuid")
+        copy_puuid.setEnabled(bool(puuid))
+        copy_puuid.triggered.connect(
+            lambda: clipboard.setText(puuid, QClipboard.Mode.Clipboard)
+        )
+
+        menu.addSeparator()
+
+        open_tracker = menu.addAction("Open in tracker.gg")
+        open_tracker.setEnabled(bool(name) and "#" in name)
+        open_tracker.triggered.connect(
+            lambda: webbrowser.open(self._tracker_gg_url(name))
+        )
+
+        open_blitz = menu.addAction("Open in blitz.gg")
+        open_blitz.setEnabled(bool(name) and "#" in name)
+        open_blitz.triggered.connect(
+            lambda: webbrowser.open(self._blitz_gg_url(name))
+        )
+
+        menu.exec(self._player_table.viewport().mapToGlobal(point))
+
+    @staticmethod
+    def _tracker_gg_url(name: str) -> str:
+        return TRACKER_GG_TEMPLATE.format(
+            name=urllib.parse.quote(name, safe="")
+        )
+
+    @staticmethod
+    def _blitz_gg_url(name: str) -> str:
+        # blitz.gg accepts riot-id with a literal '#'.
+        return BLITZ_GG_TEMPLATE.format(
+            name=urllib.parse.quote(name, safe="#")
+        )
 
     @staticmethod
     def _format_rank(rank: Any) -> str:

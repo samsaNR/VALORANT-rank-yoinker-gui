@@ -335,4 +335,45 @@ QToolTip {{
     border: 1px solid {BORDER};
     padding: 4px 8px;
 }}
+
+QFrame#playerLoadoutCard {{
+    background-color: {PANEL};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
+
+QFrame#playerLoadoutCard[team="Blue"] {{
+    border-left: 3px solid {TEAM_BLUE};
+}}
+
+QFrame#playerLoadoutCard[team="Red"] {{
+    border-left: 3px solid {TEAM_RED};
+}}
+
+QFrame#playerLoadoutCard[team="Yellow"] {{
+    border-left: 3px solid {WARNING};
+}}
+
+QLabel#playerName {{
+    color: {TEXT};
+    font-size: 15px;
+    font-weight: 700;
+}}
+
+QLabel#playerAvatar {{
+    background-color: {PANEL_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+}}
+
+QFrame#skinTile {{
+    background-color: {PANEL_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+}}
+
+QLabel#skinTileIcon {{
+    background-color: #11151c;
+    border-radius: 3px;
+}}
 """

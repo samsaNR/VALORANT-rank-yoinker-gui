@@ -5,16 +5,18 @@ from __future__ import annotations
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -24,8 +26,11 @@ from src.gui.config_io import load_config
 from src.gui.pages.about import AboutPage
 from src.gui.pages.accounts import AccountsPage
 from src.gui.pages.configuration import ConfigurationPage
+from src.gui.pages.loadouts import LoadoutsPage
 from src.gui.pages.logs import LogsPage
 from src.gui.pages.tracker import TrackerPage
+from src.gui.workers.global_hotkey import GlobalHotkey
+from src.gui.workers.image_cache import ImageCache
 from src.gui.workers.tracker_client import TrackerClient
 from src.gui.workers.tracker_runner import TrackerRunner
 
@@ -35,6 +40,7 @@ class MainWindow(QMainWindow):
 
     NAV_ITEMS = (
         ("Tracker", "tracker"),
+        ("Loadouts", "loadouts"),
         ("Configuration", "config"),
         ("Accounts", "accounts"),
         ("Logs", "logs"),
@@ -46,16 +52,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"vRY \u2014 VALORANT rank yoinker v{version}")
         self.resize(1180, 760)
         self.setMinimumSize(960, 600)
+        self._icon = QIcon(icon_path) if icon_path else QIcon()
         if icon_path:
-            self.setWindowIcon(QIcon(icon_path))
+            self.setWindowIcon(self._icon)
 
         self._tracker_runner = TrackerRunner(self)
         self._tracker_client = TrackerClient(self)
+        self._image_cache = ImageCache(self)
+        self._tray: Optional[QSystemTrayIcon] = None
+        self._hotkey: Optional[GlobalHotkey] = None
+        self._force_quit = False
 
         self._tracker_page = TrackerPage(
             on_start=self._on_start_tracker,
             on_stop=self._on_stop_tracker,
+            image_cache=self._image_cache,
         )
+        self._loadouts_page = LoadoutsPage(image_cache=self._image_cache)
         self._config_page = ConfigurationPage()
         self._accounts_page = AccountsPage()
         self._logs_page = LogsPage()
@@ -63,6 +76,7 @@ class MainWindow(QMainWindow):
 
         self._page_widgets = {
             "tracker": self._tracker_page,
+            "loadouts": self._loadouts_page,
             "config": self._config_page,
             "accounts": self._accounts_page,
             "logs": self._logs_page,
@@ -71,6 +85,8 @@ class MainWindow(QMainWindow):
 
         self._build_layout()
         self._wire_workers()
+        self._setup_tray()
+        self._setup_hotkey()
 
     # ----------------------------------------------------------- layout
     def _build_layout(self) -> None:
@@ -157,6 +173,9 @@ class MainWindow(QMainWindow):
         self._tracker_client.disconnected.connect(self._on_client_disconnected)
         self._tracker_client.heartbeat.connect(self._tracker_page.apply_heartbeat)
         self._tracker_client.chat_message.connect(self._tracker_page.append_chat)
+        self._tracker_client.match_loadout.connect(
+            self._loadouts_page.apply_match_loadout
+        )
         self._tracker_client.error.connect(self._on_client_error)
 
     # ------------------------------------------------------------ slots
@@ -210,8 +229,78 @@ class MainWindow(QMainWindow):
         # Keep noisy reconnect errors in the status bar only.
         self._connection_label.setText(f"WS: {message[:60]}")
 
+    # -------------------------------------------------------- tray / hotkey
+    def _setup_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self._tray = QSystemTrayIcon(self._icon, self)
+        self._tray.setToolTip("vRY — VALORANT rank yoinker")
+        menu = QMenu(self)
+        show_action = QAction("Show vRY", self)
+        show_action.triggered.connect(self._show_from_tray)
+        menu.addAction(show_action)
+        hide_action = QAction("Hide window", self)
+        hide_action.triggered.connect(self.hide)
+        menu.addAction(hide_action)
+        menu.addSeparator()
+        quit_action = QAction("Quit vRY", self)
+        quit_action.triggered.connect(self._quit_from_tray)
+        menu.addAction(quit_action)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _setup_hotkey(self) -> None:
+        # Global, system-wide hotkey to toggle the window. Only activates on
+        # Windows where ``RegisterHotKey`` is available; on Linux/macOS the
+        # GlobalHotkey class no-ops and we fall back to a window-local
+        # ``QShortcut`` so the same chord still works when vRY has focus.
+        self._hotkey = GlobalHotkey(self)
+        self._hotkey.toggle_requested.connect(self._toggle_window)
+        ok = self._hotkey.start("ctrl+shift+v")
+        if not ok:
+            shortcut = QShortcut(QKeySequence("Ctrl+Shift+V"), self)
+            shortcut.activated.connect(self._toggle_window)
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._show_from_tray()
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self) -> None:
+        self._force_quit = True
+        self.close()
+
+    def _toggle_window(self) -> None:
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+        else:
+            self._show_from_tray()
+
     # ------------------------------------------------------------ window
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # When a tray icon is available, the close button just minimises to
+        # tray; tray → Quit (or _force_quit) actually exits the app.
+        if self._tray is not None and not self._force_quit:
+            event.ignore()
+            self.hide()
+            self._tray.showMessage(
+                "vRY is still running",
+                "Right-click the tray icon to quit, or press Ctrl+Shift+V to "
+                "toggle the window.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2500,
+            )
+            return
+        if self._hotkey is not None:
+            self._hotkey.stop()
         self._tracker_client.stop()
         if self._tracker_runner.is_running():
             self._tracker_runner.stop()
