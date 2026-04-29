@@ -309,26 +309,35 @@ class LoadoutsPage(QWidget):
                 widget.deleteLater()
         self._cards = []
 
-        # Sort: same team first, alphabetical.
-        items = sorted(
+        # Group by team — Blue / Red / other (DM, agent select). Keep the
+        # alphabetical order inside each team for stability.
+        from collections import OrderedDict
+
+        groups: "OrderedDict[str, List[tuple[str, Dict[str, Any]]]]" = OrderedDict()
+        groups["Blue"] = []
+        groups["Red"] = []
+
+        ordered_items = sorted(
             players.items(),
             key=lambda kv: (
                 str(kv[1].get("Team") or ""),
                 _strip_ansi(str(kv[1].get("Name") or "")).lower(),
             ),
         )
-
-        for puuid, loadout in items:
+        for puuid, loadout in ordered_items:
             if not isinstance(loadout, dict):
                 continue
-            card = _PlayerLoadoutCard(
-                puuid=str(puuid),
-                loadout=loadout,
-                image_cache=self._image_cache,
-            )
-            self._cards.append(card)
+            team_label = str(loadout.get("Team") or "Other").strip().capitalize()
+            if team_label not in ("Blue", "Red"):
+                team_label = "Other"
+            groups.setdefault(team_label, []).append((str(puuid), loadout))
+
+        for team_label, members in groups.items():
+            if not members:
+                continue
+            section = self._build_team_section(team_label, members)
             self._content_layout.insertWidget(
-                self._content_layout.count() - 1, card
+                self._content_layout.count() - 1, section
             )
 
         map_name = str(payload.get("map") or "")
@@ -336,6 +345,49 @@ class LoadoutsPage(QWidget):
         if map_name:
             meta += f" \u00b7 map: {map_name}"
         self._meta_label.setText(meta)
+
+    def _build_team_section(
+        self,
+        team_label: str,
+        members: List[tuple[str, Dict[str, Any]]],
+    ) -> QFrame:
+        """Render a Blue/Red/Other team header followed by a 2-col card grid."""
+
+        from PySide6.QtCore import Qt as _Qt
+
+        section = QFrame()
+        section.setObjectName("teamSection")
+        outer = QVBoxLayout(section)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        header = QLabel(f"{team_label.upper()} \u00b7 {len(members)}")
+        header.setObjectName("teamSectionTitle")
+        header.setProperty("team", team_label)
+        outer.addWidget(header)
+
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        grid.setContentsMargins(0, 0, 0, 0)
+
+        for idx, (puuid, loadout) in enumerate(members):
+            row, col = divmod(idx, 2)
+            card = _PlayerLoadoutCard(
+                puuid=puuid,
+                loadout=loadout,
+                image_cache=self._image_cache,
+            )
+            self._cards.append(card)
+            grid.addWidget(card, row, col)
+
+        # Make both columns share the available width.
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        outer.addWidget(grid_widget)
+        return section
 
     # --------------------------------------------------------- internal
     def _on_image_ready(self, url: str, pixmap: QPixmap) -> None:

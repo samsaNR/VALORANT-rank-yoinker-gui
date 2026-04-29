@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from src.constants import NUMBERTORANKS, version
 from src.gui.config_io import load_config
+from src.gui.icons import svg_icon
 from src.gui.pages._common import card, page_header
 from src.gui.stats_repo import StatsRepository
 from src.gui.workers.image_cache import ImageCache
@@ -173,44 +174,38 @@ class TrackerPage(QWidget):
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(16)
 
-        layout.addLayout(self._build_header())
-        layout.addLayout(self._build_status_row())
+        layout.addWidget(self._build_status_card())
         layout.addWidget(self._build_body(), 1)
 
-    def _build_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(
-            page_header(
-                "Live tracker",
-                "All the data the console used to print \u2014 now in a Qt window.",
-            ),
-            1,
+    def _build_status_card(self) -> QFrame:
+        """Single hero card combining state pill, key stats and Start/Stop CTA.
+
+        Replaces the old two-row header (page title + separate stats row) with
+        a denser card so the player table gets more vertical space.
+        """
+
+        wrapper = QFrame()
+        wrapper.setObjectName("statusCard")
+        outer = QVBoxLayout(wrapper)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(14)
+
+        top = QHBoxLayout()
+        top.setSpacing(14)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title_label = QLabel("Live tracker")
+        title_label.setObjectName("pageTitle")
+        title_box.addWidget(title_label)
+        subtitle_label = QLabel(
+            "Real-time match data \u2014 ranks, skins, chat and more."
         )
-
-        self._connection_pill = QLabel("OFFLINE")
-        self._connection_pill.setObjectName("statePill")
-        self._connection_pill.setProperty("gameState", "DISCONNECTED")
-        row.addWidget(
-            self._connection_pill, 0, Qt.AlignmentFlag.AlignTop
-        )
-
-        self._start_btn = QPushButton("Start tracker")
-        self._start_btn.setObjectName("primary")
-        self._start_btn.clicked.connect(self._on_start)
-        row.addWidget(self._start_btn, 0, Qt.AlignmentFlag.AlignTop)
-
-        self._stop_btn = QPushButton("Stop")
-        self._stop_btn.setObjectName("danger")
-        self._stop_btn.clicked.connect(self._on_stop)
-        row.addWidget(self._stop_btn, 0, Qt.AlignmentFlag.AlignTop)
-
-        return row
-
-    def _build_status_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(10)
+        subtitle_label.setObjectName("pageSubtitle")
+        title_box.addWidget(subtitle_label)
+        top.addLayout(title_box, 1)
 
         self._state_pill = QLabel("MENUS")
         self._state_pill.setObjectName("statePill")
@@ -218,22 +213,49 @@ class TrackerPage(QWidget):
         self._state_pill.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )
-        row.addWidget(self._state_pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(self._state_pill, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        self._connection_pill = QLabel("OFFLINE")
+        self._connection_pill.setObjectName("connectionPill")
+        self._connection_pill.setProperty("connected", "false")
+        top.addWidget(
+            self._connection_pill, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._start_btn = QPushButton(" Start tracker")
+        self._start_btn.setObjectName("primary")
+        self._start_btn.setIcon(svg_icon("play", color="#ffffff"))
+        self._start_btn.setIconSize(QSize(16, 16))
+        self._start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._start_btn.clicked.connect(self._on_start)
+        top.addWidget(self._start_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._stop_btn = QPushButton(" Stop")
+        self._stop_btn.setObjectName("danger")
+        self._stop_btn.setIcon(svg_icon("stop", color="#ff4655"))
+        self._stop_btn.setIconSize(QSize(14, 14))
+        self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._stop_btn.clicked.connect(self._on_stop)
+        top.addWidget(self._stop_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        outer.addLayout(top)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(10)
         self._mode_badge = StatBadge("Mode")
         self._map_badge = StatBadge("Map")
         self._players_badge = StatBadge("Players")
         self._heartbeat_badge = StatBadge("Last update")
-
         for badge in (
             self._mode_badge,
             self._map_badge,
             self._players_badge,
             self._heartbeat_badge,
         ):
-            row.addWidget(badge, 1)
+            bottom.addWidget(badge, 1)
+        outer.addLayout(bottom)
 
-        return row
+        return wrapper
 
     def _build_body(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -289,24 +311,58 @@ class TrackerPage(QWidget):
         header_view.setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
-        # Stretch the name and skin columns so long values get more room.
+        # Stretch name/skin/rank columns; rank in particular needs the room so
+        # values like "Immortal 3" don't get truncated to "Immo...".
         for index, (key, _) in enumerate(PLAYER_COLUMNS):
             if key in ("name", "skin"):
                 header_view.setSectionResizeMode(
                     index, QHeaderView.ResizeMode.Stretch
                 )
+            elif key in ("rank", "peakRank"):
+                header_view.setSectionResizeMode(
+                    index, QHeaderView.ResizeMode.Interactive
+                )
+                self._player_table.setColumnWidth(index, 110)
         layout.addWidget(self._player_table, 1)
 
-        self._players_empty = QLabel(
-            "Waiting for game data\u2026 start the tracker and join a match."
+        self._players_empty = self._build_empty_state(
+            "Waiting for game data",
+            "Start the tracker and join a match \u2014 player rows will appear here.",
         )
-        self._players_empty.setProperty("muted", True)
-        self._players_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._players_empty)
         return container
 
+    @staticmethod
+    def _build_empty_state(title: str, subtitle: str) -> QWidget:
+        wrapper = QFrame()
+        wrapper.setObjectName("card")
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(20, 28, 20, 28)
+        layout.setSpacing(8)
+
+        glyph = QLabel("\u25c8")  # diamond glyph as a visual anchor
+        font = glyph.font()
+        font.setPointSize(28)
+        font.setBold(True)
+        glyph.setFont(font)
+        glyph.setStyleSheet("color: #ff4655;")
+        glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(glyph)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("emptyTitle")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("emptySubtitle")
+        subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle_label.setWordWrap(True)
+        layout.addWidget(subtitle_label)
+        return wrapper
+
     def _build_chat_panel(self) -> QWidget:
-        from PySide6.QtWidgets import QListWidget  # local import keeps top tidy
+        from PySide6.QtWidgets import QScrollArea
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -317,16 +373,27 @@ class TrackerPage(QWidget):
         header.setObjectName("statLabel")
         layout.addWidget(header)
 
-        self._chat_list = QListWidget()
-        self._chat_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
-        self._chat_list.setWordWrap(True)
-        layout.addWidget(self._chat_list, 1)
+        # Custom scrollable column of chat bubbles, instead of a plain
+        # QListWidget with one-line items, so multiline messages, channel
+        # pills and timestamps all read more like a modern chat UI.
+        self._chat_scroll = QScrollArea()
+        self._chat_scroll.setWidgetResizable(True)
+        self._chat_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        self._chat_empty = QLabel("No messages yet.")
-        self._chat_empty.setProperty("muted", True)
-        self._chat_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chat_body = QWidget()
+        chat_body.setObjectName("chatBody")
+        self._chat_layout = QVBoxLayout(chat_body)
+        self._chat_layout.setContentsMargins(8, 8, 8, 8)
+        self._chat_layout.setSpacing(6)
+        self._chat_layout.addStretch(1)
+        self._chat_scroll.setWidget(chat_body)
+
+        layout.addWidget(self._chat_scroll, 1)
+
+        self._chat_empty = self._build_empty_state(
+            "Quiet lobby",
+            "In-match chat will appear here once the tracker connects.",
+        )
         layout.addWidget(self._chat_empty)
         return card(container, title=None)
 
@@ -375,8 +442,6 @@ class TrackerPage(QWidget):
             self._update_players(players)
 
     def append_chat(self, payload: Dict[str, Any]) -> None:
-        from PySide6.QtWidgets import QListWidgetItem
-
         self._chat_history.append(payload)
         if not self._chat_history:
             return
@@ -384,24 +449,75 @@ class TrackerPage(QWidget):
         self._chat_empty.hide()
         timestamp = payload.get("time")
         if isinstance(timestamp, (int, float)) and timestamp > 0:
-            stamp = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+            stamp = datetime.fromtimestamp(timestamp).strftime("%H:%M")
         else:
-            stamp = datetime.now().strftime("%H:%M:%S")
-        group = (payload.get("group") or "").strip() or "All"
+            stamp = datetime.now().strftime("%H:%M")
+        group_raw = (payload.get("group") or "").strip()
+        group = group_raw or "All"
         speaker = payload.get("player") or payload.get("agent") or "?"
         text = payload.get("text") or ""
-        line = f"[{stamp}] [{group}] {speaker}: {text}"
 
-        item = QListWidgetItem(line)
-        if group.lower().startswith("team"):
-            item.setForeground(QColor("#74a2d6"))
+        bubble = self._build_chat_bubble(stamp, group, speaker, text)
+        # Insert before the trailing stretch so messages keep stacking.
+        self._chat_layout.insertWidget(
+            self._chat_layout.count() - 1, bubble
+        )
+
+        # Bound the visible list (we still keep the deque history above).
+        # Walk over the layout (which has one trailing stretch) and remove
+        # the oldest bubble while we're over the limit.
+        while self._chat_layout.count() - 1 > self.CHAT_LIMIT:
+            old_item = self._chat_layout.takeAt(0)
+            old_widget = old_item.widget() if old_item is not None else None
+            if old_widget is not None:
+                old_widget.deleteLater()
+
+        bar = self._chat_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _build_chat_bubble(
+        self, stamp: str, group: str, speaker: str, text: str
+    ) -> QWidget:
+        """Render one chat message as a coloured pill bubble."""
+
+        bubble = QFrame()
+        bubble.setObjectName("chatBubble")
+        body = QVBoxLayout(bubble)
+        body.setContentsMargins(10, 6, 10, 6)
+        body.setSpacing(2)
+
+        meta = QHBoxLayout()
+        meta.setSpacing(6)
+        channel_pill = QLabel(group.upper())
+        channel_pill.setObjectName("chatChannel")
+        # Map the freeform group string to a known channel for styling.
+        normalised = group.lower()
+        if normalised.startswith("team"):
+            channel = "team"
+        elif normalised.startswith("party") or normalised.startswith("lobby"):
+            channel = "party"
         else:
-            item.setForeground(QColor("#ece8e1"))
-        self._chat_list.addItem(item)
-        # Keep the visual list bounded as well.
-        while self._chat_list.count() > self.CHAT_LIMIT:
-            self._chat_list.takeItem(0)
-        self._chat_list.scrollToBottom()
+            channel = "all"
+        channel_pill.setProperty("channel", channel)
+        meta.addWidget(channel_pill)
+
+        author_label = QLabel(_strip_ansi(str(speaker)))
+        author_label.setObjectName("chatAuthor")
+        meta.addWidget(author_label)
+
+        meta.addStretch(1)
+
+        timestamp_label = QLabel(stamp)
+        timestamp_label.setObjectName("chatTimestamp")
+        meta.addWidget(timestamp_label)
+
+        body.addLayout(meta)
+
+        text_label = QLabel(_strip_ansi(str(text)))
+        text_label.setObjectName("chatBody")
+        text_label.setWordWrap(True)
+        body.addWidget(text_label)
+        return bubble
 
     # ---------------------------------------------------------- internals
     def _update_state_pill(self, state: str) -> None:
@@ -412,10 +528,10 @@ class TrackerPage(QWidget):
         self._state_pill.style().polish(self._state_pill)
 
     def _update_connection_pill(self, connected: bool) -> None:
-        text = "LIVE" if connected else "OFFLINE"
-        state = "INGAME" if connected else "DISCONNECTED"
-        self._connection_pill.setText(text)
-        self._connection_pill.setProperty("gameState", state)
+        self._connection_pill.setText("LIVE" if connected else "OFFLINE")
+        self._connection_pill.setProperty(
+            "connected", "true" if connected else "false"
+        )
         self._connection_pill.style().unpolish(self._connection_pill)
         self._connection_pill.style().polish(self._connection_pill)
 

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from src.constants import version
 from src.gui.config_io import load_config
+from src.gui.icons import svg_icon
 from src.gui.pages.about import AboutPage
 from src.gui.pages.accounts import AccountsPage
 from src.gui.pages.configuration import ConfigurationPage
@@ -42,14 +43,20 @@ class MainWindow(QMainWindow):
     """Sidebar + stacked pages, plus the websocket / subprocess plumbing."""
 
     NAV_ITEMS = (
-        ("Tracker", "tracker"),
-        ("Loadouts", "loadouts"),
-        ("History", "history"),
-        ("Stats", "stats"),
-        ("Configuration", "config"),
-        ("Accounts", "accounts"),
-        ("Logs", "logs"),
-        ("About", "about"),
+        ("Tracker", "tracker", "tracker"),
+        ("Loadouts", "loadouts", "loadouts"),
+        ("History", "history", "history"),
+        ("Stats", "stats", "stats"),
+        ("Configuration", "config", "config"),
+        ("Accounts", "accounts", "accounts"),
+        ("Logs", "logs", "logs"),
+        ("About", "about", "about"),
+    )
+
+    # Where the sidebar inserts a thin divider/section header.
+    SIDEBAR_SECTIONS = (
+        (0, "Live"),
+        (4, "Settings"),
     )
 
     def __init__(self, icon_path: Optional[str] = None) -> None:
@@ -115,7 +122,7 @@ class MainWindow(QMainWindow):
         body_layout.setSpacing(16)
 
         self._stack = QStackedWidget()
-        for _, key in self.NAV_ITEMS:
+        for _label, key, _icon in self.NAV_ITEMS:
             self._stack.addWidget(self._page_widgets[key])
         body_layout.addWidget(self._stack, 1)
 
@@ -126,37 +133,52 @@ class MainWindow(QMainWindow):
         status.setSizeGripEnabled(False)
         self._status_label = QLabel("Tracker idle")
         status.addWidget(self._status_label, 1)
-        self._connection_label = QLabel("Disconnected")
+        self._connection_label = QLabel("Offline")
+        self._connection_label.setObjectName("connectionPill")
+        self._connection_label.setProperty("connected", "false")
         status.addPermanentWidget(self._connection_label)
 
     def _build_sidebar(self) -> QFrame:
+        from PySide6.QtCore import QSize
+
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(232)
 
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(20, 24, 20, 20)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 22, 0, 18)
+        layout.setSpacing(2)
 
+        brand_box = QVBoxLayout()
+        brand_box.setContentsMargins(20, 0, 20, 16)
+        brand_box.setSpacing(2)
         title = QLabel("vRY")
         title.setObjectName("brandTitle")
-        layout.addWidget(title)
-
-        subtitle = QLabel(f"VALORANT rank yoinker\nv{version}")
+        brand_box.addWidget(title)
+        subtitle = QLabel("VALORANT rank yoinker")
         subtitle.setObjectName("brandSubtitle")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(subtitle)
-        layout.addSpacing(20)
+        brand_box.addWidget(subtitle)
+        layout.addLayout(brand_box)
 
         self._nav_buttons: List[QPushButton] = []
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
 
-        for index, (label, key) in enumerate(self.NAV_ITEMS):
-            button = QPushButton(label)
+        section_starts = dict(self.SIDEBAR_SECTIONS)
+
+        for index, (label, key, icon_name) in enumerate(self.NAV_ITEMS):
+            if index in section_starts:
+                if index > 0:
+                    layout.addSpacing(10)
+                section_label = QLabel(section_starts[index])
+                section_label.setObjectName("sidebarSection")
+                layout.addWidget(section_label)
+            button = QPushButton(" " + label)
             button.setObjectName("navButton")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setIcon(svg_icon(icon_name, color="#aab5c5"))
+            button.setIconSize(QSize(18, 18))
             button.clicked.connect(
                 lambda _checked=False, idx=index: self._show_page(idx)
             )
@@ -167,10 +189,10 @@ class MainWindow(QMainWindow):
         self._nav_buttons[0].setChecked(True)
         layout.addStretch(1)
 
-        footer = QLabel("Made for vRY by the community")
-        footer.setObjectName("brandSubtitle")
-        footer.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(footer)
+        version_label = QLabel(f"v{version}")
+        version_label.setObjectName("sidebarVersion")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(version_label)
         return sidebar
 
     # ----------------------------------------------------------- wiring
@@ -244,16 +266,25 @@ class MainWindow(QMainWindow):
         self._logs_page.append_chunk(chunk)
 
     def _on_client_connected(self) -> None:
-        self._connection_label.setText("Connected")
+        self._connection_label.setText("Live")
+        self._connection_label.setProperty("connected", "true")
+        self._connection_label.style().unpolish(self._connection_label)
+        self._connection_label.style().polish(self._connection_label)
         self._tracker_page.set_connected(True)
 
     def _on_client_disconnected(self) -> None:
-        self._connection_label.setText("Disconnected")
+        self._connection_label.setText("Offline")
+        self._connection_label.setProperty("connected", "false")
+        self._connection_label.style().unpolish(self._connection_label)
+        self._connection_label.style().polish(self._connection_label)
         self._tracker_page.set_connected(False)
 
     def _on_client_error(self, message: str) -> None:
         # Keep noisy reconnect errors in the status bar only.
-        self._connection_label.setText(f"WS: {message[:60]}")
+        self._connection_label.setText(f"WS: {message[:48]}")
+        self._connection_label.setProperty("connected", "false")
+        self._connection_label.style().unpolish(self._connection_label)
+        self._connection_label.style().polish(self._connection_label)
 
     # -------------------------------------------------------- tray / hotkey
     def _setup_tray(self) -> None:
