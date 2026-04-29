@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections import deque
 from datetime import datetime
@@ -27,6 +28,12 @@ from PySide6.QtWidgets import (
 from src.constants import NUMBERTORANKS, version
 from src.gui.config_io import load_config
 from src.gui.pages._common import card, page_header
+
+_ANSI_RE = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
+
+
+def _strip_ansi(value: str) -> str:
+    return _ANSI_RE.sub("", value) if isinstance(value, str) else value
 
 # Visual constants
 GAME_STATES = ("MENUS", "PREGAME", "INGAME", "DISCONNECTED")
@@ -355,8 +362,14 @@ class TrackerPage(QWidget):
         table_flags = cfg.get("table") or {}
 
         rows = list(players.values())
+
+        def _rank_idx(p: Dict[str, Any]) -> int:
+            r = p.get("rank")
+            return int(r) if isinstance(r, int) else -1
+
+        # Higher ranks first, then group by party.
         rows.sort(key=lambda p: int(p.get("partyNumber") or 0))
-        rows.sort(key=lambda p: str(p.get("rank") or ""), reverse=True)
+        rows.sort(key=_rank_idx, reverse=True)
 
         self._player_model.removeRows(0, self._player_model.rowCount())
         if not rows:
@@ -374,7 +387,11 @@ class TrackerPage(QWidget):
                 item = QStandardItem(value)
                 item.setEditable(False)
                 if key == "rank":
-                    color = _rank_color(str(player.get("rank") or ""))
+                    color = _rank_color(value)
+                    if color is not None:
+                        item.setForeground(color)
+                if key == "peakRank":
+                    color = _rank_color(value)
                     if color is not None:
                         item.setForeground(color)
                 if key in ("rr", "level", "kd", "headshotPercentage"):
@@ -392,9 +409,9 @@ class TrackerPage(QWidget):
             number = player.get("partyNumber")
             return f"P{number}" if number else ""
         if key == "agent":
-            return str(player.get("agent") or "?")
+            return _strip_ansi(str(player.get("agent") or "?"))
         if key == "name":
-            return str(player.get("name") or "?")
+            return _strip_ansi(str(player.get("name") or "?"))
         if key == "rank":
             rank = player.get("rank")
             return self._format_rank(rank)
@@ -430,10 +447,24 @@ class TrackerPage(QWidget):
 
     @staticmethod
     def _format_rank(rank: Any) -> str:
+        """Resolve a numeric rank index to its human-readable name.
+
+        ``main.py`` puts ``playerRank["rank"]`` (an int) into the heartbeat
+        payload; the rich console looks up :data:`NUMBERTORANKS` (a list of
+        ANSI-coloured strings) by index. We do the same here and strip the
+        escape codes for plain text rendering.
+        """
+
         if rank in (None, ""):
             return "\u2014"
+        if isinstance(rank, bool):  # bool is a subclass of int; reject explicitly
+            return str(rank)
         if isinstance(rank, int):
-            return NUMBERTORANKS.get(rank, str(rank))
+            if 0 <= rank < len(NUMBERTORANKS):
+                return _strip_ansi(NUMBERTORANKS[rank])
+            return str(rank)
+        if isinstance(rank, str):
+            return _strip_ansi(rank)
         return str(rank)
 
     # --------------------------------------------------------- diagnostics
