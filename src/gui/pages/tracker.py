@@ -164,6 +164,9 @@ class TrackerPage(QWidget):
         self._image_cache.image_ready.connect(self._on_image_ready)
         self._stats_repo = stats_repo or StatsRepository()
         self._own_puuid: str = ""
+        # Track row indices of synthetic 'BLUE TEAM' / 'RED TEAM' banner rows
+        # so we can apply column spans after the model is rebuilt.
+        self._banner_rows: List[int] = []
 
         self._build_layout()
         self._update_buttons()
@@ -264,9 +267,9 @@ class TrackerPage(QWidget):
 
         splitter.addWidget(self._build_player_table())
         splitter.addWidget(self._build_chat_panel())
-        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([700, 280])
+        splitter.setSizes([900, 260])
         return splitter
 
     def _build_player_table(self) -> QWidget:
@@ -292,8 +295,11 @@ class TrackerPage(QWidget):
         self._player_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
-        self._player_table.setAlternatingRowColors(True)
-        self._player_table.setSortingEnabled(True)
+        self._player_table.setAlternatingRowColors(False)
+        # Sorting is disabled because we group rows by team and emit
+        # synthetic 'BLUE TEAM' / 'RED TEAM' header rows; user sorting would
+        # mix the headers in with normal rows.
+        self._player_table.setSortingEnabled(False)
         self._player_table.verticalHeader().setVisible(False)
         # Avatar / skin icon row needs a bit more breathing room.
         self._player_table.verticalHeader().setDefaultSectionSize(34)
@@ -311,10 +317,12 @@ class TrackerPage(QWidget):
         header_view.setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
-        # Stretch name/skin/rank columns; rank in particular needs the room so
-        # values like "Immortal 3" don't get truncated to "Immo...".
+        # Stretch the name column so it absorbs leftover width; explicitly
+        # size the rank/peak columns wide enough to fit the longest tier
+        # label ("Ascendant 2") because ResizeToContents underestimates with
+        # our stylesheet padding and chops to "Asc...".
         for index, (key, _) in enumerate(PLAYER_COLUMNS):
-            if key in ("name", "skin"):
+            if key == "name":
                 header_view.setSectionResizeMode(
                     index, QHeaderView.ResizeMode.Stretch
                 )
@@ -322,7 +330,13 @@ class TrackerPage(QWidget):
                 header_view.setSectionResizeMode(
                     index, QHeaderView.ResizeMode.Interactive
                 )
+                self._player_table.setColumnWidth(index, 120)
+            elif key == "skin":
+                header_view.setSectionResizeMode(
+                    index, QHeaderView.ResizeMode.Interactive
+                )
                 self._player_table.setColumnWidth(index, 110)
+        header_view.setMinimumSectionSize(40)
         layout.addWidget(self._player_table, 1)
 
         self._players_empty = self._build_empty_state(
@@ -549,11 +563,26 @@ class TrackerPage(QWidget):
             r = p.get("rank")
             return int(r) if isinstance(r, int) else -1
 
-        # Higher ranks first, then group by party.
-        rows.sort(key=lambda p: int(p.get("partyNumber") or 0))
-        rows.sort(key=_rank_idx, reverse=True)
+        # Group by team (Blue, Red, then anything else such as DM/agent
+        # select), and within each team sort by rank descending.
+        from collections import OrderedDict
+
+        groups: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+        for label in ("Blue", "Red"):
+            groups[label] = []
+        for player in rows:
+            team_label = (
+                str(player.get("team") or "Other").strip().capitalize()
+                or "Other"
+            )
+            if team_label not in ("Blue", "Red"):
+                team_label = "Other"
+            groups.setdefault(team_label, []).append(player)
+        for label, members in groups.items():
+            members.sort(key=_rank_idx, reverse=True)
 
         self._player_model.removeRows(0, self._player_model.rowCount())
+        self._banner_rows = []
         if not rows:
             self._players_empty.show()
             self._players_badge.set_value("0")
@@ -563,75 +592,150 @@ class TrackerPage(QWidget):
         self._players_badge.set_value(str(len(rows)))
 
         weapon_choice = str(cfg.get("weapon") or "Vandal")
-        for player in rows:
-            puuid = str(player.get("puuid") or "")
-            last_match = self._stats_repo.last_match(puuid) if puuid else None
-            played_with = (
-                self._stats_repo.times_played_with(puuid) if puuid else 0
-            )
-            rr_delta = (
-                self._stats_repo.last_rr_delta(puuid) if puuid else None
-            )
-            tooltip = self._build_player_tooltip(
-                player, last_match, played_with, rr_delta
-            )
-            row_items: List[QStandardItem] = []
-            skin_url = self._skin_icon_url(player, weapon_choice)
-            for key, _label in PLAYER_COLUMNS:
-                value = self._cell_for(
-                    key, player, table_flags, weapon_choice, rr_delta
+
+        # Render team-by-team with a banner row above each non-empty group.
+        for team_label, members in groups.items():
+            if not members:
+                continue
+            self._append_team_banner(team_label, len(members))
+            for player in members:
+                self._append_player_row(
+                    player, weapon_choice, table_flags
                 )
-                item = QStandardItem(value)
-                item.setEditable(False)
-                if key == "rank":
-                    color = _rank_color(value)
-                    if color is not None:
-                        item.setForeground(color)
-                if key == "peakRank":
-                    color = _rank_color(value)
-                    if color is not None:
-                        item.setForeground(color)
-                if key == "rrDelta":
-                    if rr_delta is not None and rr_delta > 0:
-                        item.setForeground(QColor("#5fcf80"))
-                    elif rr_delta is not None and rr_delta < 0:
-                        item.setForeground(QColor("#ff4655"))
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if key in ("rr", "level", "kd", "headshotPercentage"):
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if key == "name":
-                    item.setData(player.get("puuid"), PUUID_ROLE)
-                    real_name = _strip_ansi(str(player.get("name") or ""))
-                    if self._is_hidden_name(real_name):
-                        # Italicise hidden names so it's obvious that the value
-                        # in this cell is the agent and not the actual riot id.
-                        font = item.font()
-                        font.setItalic(True)
-                        item.setFont(font)
-                        item.setForeground(QColor("#8b95a3"))
-                        item.setData("", NAME_ROLE)
-                    else:
-                        item.setData(real_name, NAME_ROLE)
-                    card_url = str(player.get("playerCard") or "")
-                    if card_url:
-                        item.setData(card_url, PLAYER_CARD_URL_ROLE)
-                        pix = self._image_cache.request(card_url)
-                        if pix is not None:
-                            item.setIcon(QIcon(self._scale_avatar(pix)))
-                    if played_with > 0:
-                        item.setText(item.text() + f"  ×{played_with}")
-                    if tooltip:
-                        item.setToolTip(tooltip)
-                if key == "skin":
-                    if skin_url:
-                        item.setData(skin_url, SKIN_ICON_URL_ROLE)
-                        item.setToolTip(self._skin_tooltip(value, skin_url))
-                        # Trigger lazy download so the tooltip is ready next time.
-                        self._image_cache.request(skin_url)
-                row_items.append(item)
-            self._apply_team_color(row_items, player.get("team"))
-            self._apply_glow(row_items, player.get("rank"))
-            self._player_model.appendRow(row_items)
+        # Make the banner rows span the full width of the table.
+        self._refresh_banner_spans()
+        return
+
+    def _append_player_row(
+        self,
+        player: Dict[str, Any],
+        weapon_choice: str,
+        table_flags: Dict[str, Any],
+    ) -> None:
+        puuid = str(player.get("puuid") or "")
+        is_self = bool(puuid) and puuid == self._own_puuid
+        last_match = self._stats_repo.last_match(puuid) if puuid else None
+        played_with = (
+            self._stats_repo.times_played_with(puuid) if puuid else 0
+        )
+        rr_delta = (
+            self._stats_repo.last_rr_delta(puuid) if puuid else None
+        )
+        tooltip = self._build_player_tooltip(
+            player, last_match, played_with, rr_delta
+        )
+        row_items: List[QStandardItem] = []
+        skin_url = self._skin_icon_url(player, weapon_choice)
+        for key, _label in PLAYER_COLUMNS:
+            value = self._cell_for(
+                key, player, table_flags, weapon_choice, rr_delta
+            )
+            item = QStandardItem(value)
+            item.setEditable(False)
+            if key == "rank":
+                color = _rank_color(value)
+                if color is not None:
+                    item.setForeground(color)
+            if key == "peakRank":
+                color = _rank_color(value)
+                if color is not None:
+                    item.setForeground(color)
+            if key == "rrDelta":
+                if rr_delta is not None and rr_delta > 0:
+                    item.setForeground(QColor("#5fcf80"))
+                elif rr_delta is not None and rr_delta < 0:
+                    item.setForeground(QColor("#ff4655"))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if key in ("rr", "level", "kd", "headshotPercentage"):
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if key == "name":
+                item.setData(player.get("puuid"), PUUID_ROLE)
+                real_name = _strip_ansi(str(player.get("name") or ""))
+                if self._is_hidden_name(real_name):
+                    # Italicise hidden names so it's obvious that the value
+                    # in this cell is the agent and not the actual riot id.
+                    font = item.font()
+                    font.setItalic(True)
+                    item.setFont(font)
+                    item.setForeground(QColor("#8b95a3"))
+                    item.setData("", NAME_ROLE)
+                else:
+                    item.setData(real_name, NAME_ROLE)
+                card_url = str(player.get("playerCard") or "")
+                if card_url:
+                    item.setData(card_url, PLAYER_CARD_URL_ROLE)
+                    pix = self._image_cache.request(card_url)
+                    if pix is not None:
+                        item.setIcon(QIcon(self._scale_avatar(pix)))
+                if played_with > 0:
+                    item.setText(item.text() + f"  ×{played_with}")
+                if is_self:
+                    # Mark the local player so the row stands out in lobbies
+                    # with 10+ players.
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    item.setForeground(QColor("#ff4655"))
+                if tooltip:
+                    item.setToolTip(tooltip)
+            if key == "skin":
+                if skin_url:
+                    item.setData(skin_url, SKIN_ICON_URL_ROLE)
+                    item.setToolTip(self._skin_tooltip(value, skin_url))
+                    # Trigger lazy download so the tooltip is ready next time.
+                    self._image_cache.request(skin_url)
+            row_items.append(item)
+        self._apply_team_color(row_items, player.get("team"))
+        self._apply_glow(row_items, player.get("rank"))
+        if is_self:
+            self._apply_self_highlight(row_items)
+        self._player_model.appendRow(row_items)
+
+    def _append_team_banner(self, team_label: str, count: int) -> None:
+        """Append a single 'BLUE TEAM' / 'RED TEAM' banner row to the model."""
+
+        text = f"{team_label.upper()} TEAM \u00b7 {count}"
+        item = QStandardItem(text)
+        item.setEditable(False)
+        item.setSelectable(False)
+        font = item.font()
+        font.setBold(True)
+        font.setLetterSpacing(font.SpacingType.AbsoluteSpacing, 1)
+        item.setFont(font)
+        if team_label == "Blue":
+            item.setForeground(QColor("#74a2d6"))
+            item.setBackground(QBrush(QColor(58, 138, 232, 28)))
+        elif team_label == "Red":
+            item.setForeground(QColor("#ff7782"))
+            item.setBackground(QBrush(QColor(255, 70, 85, 32)))
+        else:
+            item.setForeground(QColor("#aab5c5"))
+            item.setBackground(QBrush(QColor(170, 181, 197, 22)))
+        # Padding via leading whitespace so the banner reads more like a chip.
+        item.setText("  " + text)
+        # Track the banner row so we can call setSpan once the model is fully
+        # populated. We only need the row index; spans are applied later.
+        self._banner_rows.append(self._player_model.rowCount())
+        # Empty placeholder cells for the remaining columns. setSpan can only
+        # hide them visually — we still need them in the model.
+        empties = [QStandardItem() for _ in range(len(PLAYER_COLUMNS) - 1)]
+        for empty in empties:
+            empty.setEditable(False)
+            empty.setSelectable(False)
+        self._player_model.appendRow([item, *empties])
+
+    def _refresh_banner_spans(self) -> None:
+        """Span each banner row across the entire table width."""
+
+        for row in self._banner_rows:
+            self._player_table.setSpan(row, 0, 1, len(PLAYER_COLUMNS))
+
+    def _apply_self_highlight(self, items: List[QStandardItem]) -> None:
+        """Tint the local player's row in red so it pops in the table."""
+
+        brush = QBrush(QColor(255, 70, 85, 56))
+        for item in items:
+            item.setBackground(brush)
 
     def _cell_for(
         self,

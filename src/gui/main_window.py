@@ -229,6 +229,7 @@ class MainWindow(QMainWindow):
             return
         self._history_page.set_own_puuid(own)
         self._stats_page.set_own_puuid(own)
+        self._loadouts_page.set_own_puuid(own)
 
     def _on_start_tracker(self) -> None:
         if self._tracker_runner.is_running():

@@ -114,11 +114,14 @@ class _PlayerLoadoutCard(QFrame):
         puuid: str,
         loadout: Dict[str, Any],
         image_cache: ImageCache,
+        is_self: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("playerLoadoutCard")
         self.setProperty("team", loadout.get("Team") or "")
+        self.setProperty("self", "true" if is_self else "false")
+        self._is_self = is_self
         self._image_cache = image_cache
         self._tiles: List[tuple[str, _SkinTile]] = []
         self._avatar_url: str = ""
@@ -157,6 +160,10 @@ class _PlayerLoadoutCard(QFrame):
             display_name = agent_name or "Hidden"
         else:
             display_name = raw_name
+
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        name_row.setContentsMargins(0, 0, 0, 0)
         name_label = QLabel(display_name)
         name_label.setObjectName("playerName")
         if hidden:
@@ -164,7 +171,18 @@ class _PlayerLoadoutCard(QFrame):
             font.setItalic(True)
             name_label.setFont(font)
             name_label.setStyleSheet("color: #8b95a3;")
-        text_col.addWidget(name_label)
+        if self._is_self:
+            font = name_label.font()
+            font.setBold(True)
+            name_label.setFont(font)
+            name_label.setStyleSheet("color: #ff4655;")
+        name_row.addWidget(name_label)
+        if self._is_self:
+            you_pill = QLabel("YOU")
+            you_pill.setObjectName("youPill")
+            name_row.addWidget(you_pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        name_row.addStretch(1)
+        text_col.addLayout(name_row)
 
         title = _strip_ansi(str(loadout.get("Title") or ""))
         meta_bits: List[str] = []
@@ -267,6 +285,7 @@ class LoadoutsPage(QWidget):
         self._image_cache = image_cache or ImageCache(self)
         self._image_cache.image_ready.connect(self._on_image_ready)
         self._cards: List[_PlayerLoadoutCard] = []
+        self._own_puuid: str = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -296,6 +315,9 @@ class LoadoutsPage(QWidget):
         layout.addWidget(self._scroll, 1)
 
     # --------------------------------------------------------- public
+    def set_own_puuid(self, puuid: str) -> None:
+        self._own_puuid = (puuid or "").strip()
+
     def apply_match_loadout(self, payload: Dict[str, Any]) -> None:
         players = payload.get("Players") or {}
         if not isinstance(players, dict):
@@ -378,6 +400,7 @@ class LoadoutsPage(QWidget):
                 puuid=puuid,
                 loadout=loadout,
                 image_cache=self._image_cache,
+                is_self=bool(self._own_puuid) and puuid == self._own_puuid,
             )
             self._cards.append(card)
             grid.addWidget(card, row, col)
