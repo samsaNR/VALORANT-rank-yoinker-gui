@@ -462,6 +462,11 @@ QFrame#playerLoadoutCard[self="true"] {{
     background-color: rgba(255, 70, 85, 0.06);
 }}
 
+QFrame#playerLoadoutCard[focused="true"] {{
+    border: 2px solid {ACCENT};
+    background-color: rgba(255, 70, 85, 0.14);
+}}
+
 QLabel#youPill {{
     color: white;
     background-color: {ACCENT};

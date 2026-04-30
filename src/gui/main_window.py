@@ -212,6 +212,12 @@ class MainWindow(QMainWindow):
         )
         self._tracker_client.error.connect(self._on_client_error)
 
+        # Right-click → "View loadout" on a player row jumps to the
+        # Loadouts page and highlights that player's card.
+        self._tracker_page.view_loadout_requested.connect(
+            self._on_view_loadout_requested
+        )
+
     # ------------------------------------------------------------ slots
     def _show_page(self, index: int) -> None:
         self._stack.setCurrentIndex(index)
@@ -222,6 +228,20 @@ class MainWindow(QMainWindow):
             self._history_page.refresh()
         elif widget is self._stats_page:
             self._stats_page.refresh()
+
+    def _on_view_loadout_requested(self, puuid: str) -> None:
+        """Switch to the Loadouts page and pulse the requested card."""
+
+        # Find the index of the loadouts page in NAV_ITEMS so we don't
+        # hard-code it.
+        for index, (_label, key, _icon) in enumerate(self.NAV_ITEMS):
+            if key == "loadouts":
+                self._show_page(index)
+                # Sync the sidebar selection too.
+                if 0 <= index < len(self._nav_buttons):
+                    self._nav_buttons[index].setChecked(True)
+                break
+        self._loadouts_page.focus_player(puuid)
 
     def _on_heartbeat(self, payload: dict) -> None:
         own = str(payload.get("puuid") or "").strip()

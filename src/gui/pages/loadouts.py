@@ -121,7 +121,9 @@ class _PlayerLoadoutCard(QFrame):
         self.setObjectName("playerLoadoutCard")
         self.setProperty("team", loadout.get("Team") or "")
         self.setProperty("self", "true" if is_self else "false")
+        self.setProperty("focused", "false")
         self._is_self = is_self
+        self._puuid = str(puuid or "")
         self._image_cache = image_cache
         self._tiles: List[tuple[str, _SkinTile]] = []
         self._avatar_url: str = ""
@@ -133,6 +135,17 @@ class _PlayerLoadoutCard(QFrame):
 
         layout.addLayout(self._build_header(loadout))
         layout.addWidget(self._build_grid(loadout))
+
+    @property
+    def puuid(self) -> str:
+        return self._puuid
+
+    def set_focused(self, focused: bool) -> None:
+        """Toggle the 'focused' property used by the QSS to pulse the card."""
+
+        self.setProperty("focused", "true" if focused else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     # ---------------------------------------------------------- header
     def _build_header(self, loadout: Dict[str, Any]) -> QHBoxLayout:
@@ -317,6 +330,28 @@ class LoadoutsPage(QWidget):
     # --------------------------------------------------------- public
     def set_own_puuid(self, puuid: str) -> None:
         self._own_puuid = (puuid or "").strip()
+
+    def focus_player(self, puuid: str) -> None:
+        """Scroll to the card matching ``puuid`` and pulse-highlight it."""
+
+        target = (puuid or "").strip()
+        if not target:
+            return
+        match: Optional[_PlayerLoadoutCard] = None
+        for card in self._cards:
+            if card.puuid == target:
+                match = card
+                break
+        if match is None:
+            return
+        # Scroll the card into view inside the QScrollArea.
+        self._scroll.ensureWidgetVisible(match, 24, 24)
+        # Pulse the focused property: turn on now, turn off after a short
+        # delay so the QSS reverts to the team/self styling.
+        match.set_focused(True)
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(2200, lambda c=match: c.set_focused(False))
 
     def apply_match_loadout(self, payload: Dict[str, Any]) -> None:
         players = payload.get("Players") or {}

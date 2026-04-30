@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt
+from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QClipboard,
@@ -143,6 +143,11 @@ class TrackerPage(QWidget):
     CHAT_LIMIT = 50
     AVATAR_SIZE = QSize(28, 28)
     SKIN_TOOLTIP_SIZE = QSize(420, 160)
+
+    # Emitted when the user picks "View loadout" from the right-click menu
+    # on a player row. The payload is the player's puuid; the main window
+    # listens to this and switches to the Loadouts page.
+    view_loadout_requested = Signal(str)
     # Glow ranks: Immortal 1+ and Radiant. NUMBERTORANKS index >= 24.
     GLOW_RANK_THRESHOLD = 24
 
@@ -1044,6 +1049,14 @@ class TrackerPage(QWidget):
         open_blitz.setEnabled(bool(name) and "#" in name)
         open_blitz.triggered.connect(
             lambda: webbrowser.open(self._blitz_gg_url(name))
+        )
+
+        menu.addSeparator()
+
+        view_loadout = menu.addAction("View loadout")
+        view_loadout.setEnabled(bool(puuid))
+        view_loadout.triggered.connect(
+            lambda: self.view_loadout_requested.emit(puuid)
         )
 
         menu.exec(self._player_table.viewport().mapToGlobal(point))
