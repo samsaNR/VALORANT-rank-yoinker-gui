@@ -61,6 +61,9 @@ def run() -> int:
     app.setStyle("Fusion")
     app.setPalette(_build_dark_palette())
     app.setStyleSheet(QSS)
+    # Without this, the tray icon would keep the event loop alive even
+    # after the user closes the window, leaving a stale process behind.
+    app.setQuitOnLastWindowClosed(True)
 
     icon = _icon_path()
     window = MainWindow(icon_path=icon or None)

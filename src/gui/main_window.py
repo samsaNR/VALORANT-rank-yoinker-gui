@@ -364,22 +364,35 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ window
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        # When a tray icon is available, the close button just minimises to
-        # tray; tray → Quit (or _force_quit) actually exits the app.
-        if self._tray is not None and not self._force_quit:
-            event.ignore()
-            self.hide()
-            self._tray.showMessage(
-                "vRY is still running",
-                "Right-click the tray icon to quit, or press Ctrl+Shift+V to "
-                "toggle the window.",
-                QSystemTrayIcon.MessageIcon.Information,
-                2500,
-            )
-            return
+        # The X button fully quits the app; users that want to keep it
+        # running in the background can use the tray icon's "Hide window"
+        # entry or the Ctrl+Shift+V hotkey instead. Without this, the
+        # program looked closed but kept living in the system tray and in
+        # the process list.
         if self._hotkey is not None:
-            self._hotkey.stop()
-        self._tracker_client.stop()
+            try:
+                self._hotkey.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self._tracker_client.stop()
+        except Exception:  # noqa: BLE001
+            pass
         if self._tracker_runner.is_running():
-            self._tracker_runner.stop()
+            try:
+                self._tracker_runner.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._tray is not None:
+            try:
+                self._tray.hide()
+            except Exception:  # noqa: BLE001
+                pass
+            self._tray = None
         super().closeEvent(event)
+        # Force the Qt event loop to quit even if some lingering object
+        # (e.g. a hidden tray icon on platforms where it counts as a
+        # top-level window) keeps the application alive.
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.quit()

@@ -110,7 +110,22 @@ class TrackerRunner(QObject):
         if proc is None or proc.poll() is not None:
             return
         try:
-            proc.terminate()
+            if platform.system() == "Windows":
+                # ``proc.terminate()`` on Windows only kills the immediate
+                # child. The tracker spawns its own helpers (riot client
+                # callbacks, etc.) that would otherwise leak. Use taskkill
+                # with /T to wipe out the whole tree.
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        creationflags=CREATE_NO_WINDOW,
+                        capture_output=True,
+                        timeout=3,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    proc.terminate()
+            else:
+                proc.terminate()
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
@@ -121,6 +136,10 @@ class TrackerRunner(QObject):
                     pass
         except OSError as exc:
             self.error.emit(f"Failed to stop the tracker process: {exc}")
+        finally:
+            # Drop our handle so the next start() can spawn a fresh process
+            # without reusing a zombie.
+            self._process = None
 
     # -------------------------------------------------------------- helpers
     def _build_command(self) -> tuple[Optional[str], List[str]]:
