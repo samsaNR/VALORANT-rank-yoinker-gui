@@ -76,6 +76,22 @@ QLabel#sidebarVersion {{
     letter-spacing: 0.5px;
 }}
 
+QLabel#sidebarCredit {{
+    color: {MUTED};
+    font-size: 10px;
+    padding: 0 12px 4px 12px;
+}}
+
+QPushButton#sidebarToggle {{
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 18);
+    border-radius: 6px;
+}}
+
+QPushButton#sidebarToggle:hover {{
+    background-color: rgba(255, 255, 255, 22);
+}}
+
 QLabel#pageTitle {{
     color: {TEXT};
     font-size: 24px;

@@ -90,6 +90,18 @@ _ICONS: dict[str, str] = {
         '<rect x="6" y="6" width="12" height="12" rx="1"/>'
         "</svg>"
     ),
+    "chevron_left": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="{stroke}" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<polyline points="15 6 9 12 15 18"/>'
+        "</svg>"
+    ),
+    "chevron_right": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="{stroke}" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<polyline points="9 6 15 12 9 18"/>'
+        "</svg>"
+    ),
     "refresh": (
         '<svg viewBox="0 0 24 24" fill="none" stroke="{stroke}" '
         'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'

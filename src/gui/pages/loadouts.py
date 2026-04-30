@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.gui.pages._common import card, page_header
+from src.gui.workers.asset_registry import AssetRegistry
 from src.gui.workers.image_cache import ImageCache
 
 _ANSI_RE = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
@@ -102,6 +103,22 @@ class _SkinTile(QFrame):
         )
         self._icon_label.setPixmap(scaled)
 
+    def set_rarity_color(self, rgb: Optional[tuple[int, int, int]]) -> None:
+        """Tint the tile's border with the skin's content-tier colour."""
+
+        if not rgb:
+            self.setStyleSheet("")
+            return
+        r, g, b = rgb
+        # Subtle tinted background + bold border so the colour pops without
+        # overwhelming the icon.
+        self.setStyleSheet(
+            f"QFrame#skinTile {{"
+            f"  border: 1px solid rgba({r},{g},{b},230);"
+            f"  background-color: rgba({r},{g},{b},28);"
+            f"}}"
+        )
+
 
 class _PlayerLoadoutCard(QFrame):
     """Per-player card with header (avatar + name + team) plus a weapons grid."""
@@ -115,6 +132,7 @@ class _PlayerLoadoutCard(QFrame):
         loadout: Dict[str, Any],
         image_cache: ImageCache,
         is_self: bool = False,
+        asset_registry: Optional[AssetRegistry] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -125,6 +143,7 @@ class _PlayerLoadoutCard(QFrame):
         self._is_self = is_self
         self._puuid = str(puuid or "")
         self._image_cache = image_cache
+        self._asset_registry = asset_registry
         self._tiles: List[tuple[str, _SkinTile]] = []
         self._avatar_url: str = ""
         self._avatar_label: QLabel = QLabel()
@@ -262,6 +281,9 @@ class _PlayerLoadoutCard(QFrame):
                 cached = self._image_cache.request(icon_url)
                 if cached is not None:
                     tile.set_icon(cached)
+            if self._asset_registry is not None:
+                rgb = self._asset_registry.skin_tier_color(skin_name)
+                tile.set_rarity_color(rgb)
             self._tiles.append((icon_url, tile))
             grid.addWidget(
                 tile,
@@ -292,11 +314,15 @@ class LoadoutsPage(QWidget):
     def __init__(
         self,
         image_cache: Optional[ImageCache] = None,
+        asset_registry: Optional[AssetRegistry] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._image_cache = image_cache or ImageCache(self)
         self._image_cache.image_ready.connect(self._on_image_ready)
+        self._asset_registry = asset_registry
+        if self._asset_registry is not None:
+            self._asset_registry.assets_ready.connect(self._on_assets_ready)
         self._cards: List[_PlayerLoadoutCard] = []
         self._own_puuid: str = ""
 
@@ -436,6 +462,7 @@ class LoadoutsPage(QWidget):
                 loadout=loadout,
                 image_cache=self._image_cache,
                 is_self=bool(self._own_puuid) and puuid == self._own_puuid,
+                asset_registry=self._asset_registry,
             )
             self._cards.append(card)
             grid.addWidget(card, row, col)
@@ -451,3 +478,15 @@ class LoadoutsPage(QWidget):
     def _on_image_ready(self, url: str, pixmap: QPixmap) -> None:
         for card in self._cards:
             card.update_image(url, pixmap)
+
+    def _on_assets_ready(self) -> None:
+        """Once skin metadata is fetched, retroactively colour every tile."""
+
+        if self._asset_registry is None:
+            return
+        for card in self._cards:
+            for _url, tile in card._tiles:  # noqa: SLF001 - intentional
+                rgb = self._asset_registry.skin_tier_color(
+                    tile._skin_label.text()  # noqa: SLF001
+                )
+                tile.set_rarity_color(rgb)

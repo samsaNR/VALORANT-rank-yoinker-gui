@@ -10,7 +10,15 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QModelIndex,
+    QPoint,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import (
     QBrush,
     QClipboard,
@@ -24,6 +32,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -42,6 +51,7 @@ from src.gui.config_io import load_config
 from src.gui.icons import svg_icon
 from src.gui.pages._common import card, page_header
 from src.gui.stats_repo import StatsRepository
+from src.gui.workers.asset_registry import AssetRegistry
 from src.gui.workers.image_cache import ImageCache
 
 _ANSI_RE = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
@@ -82,12 +92,19 @@ PLAYER_COLUMNS: List[tuple[str, str]] = [
 
 NAME_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "name")
 SKIN_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "skin")
+AGENT_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "agent")
+RANK_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "rank")
+PEAK_COLUMN = next(i for i, (k, _) in enumerate(PLAYER_COLUMNS) if k == "peakRank")
 
 # Custom Qt item-data roles used to ferry domain values through the model.
 PUUID_ROLE = Qt.ItemDataRole.UserRole + 1
 NAME_ROLE = Qt.ItemDataRole.UserRole + 2
 SKIN_ICON_URL_ROLE = Qt.ItemDataRole.UserRole + 3
 PLAYER_CARD_URL_ROLE = Qt.ItemDataRole.UserRole + 4
+AGENT_ICON_URL_ROLE = Qt.ItemDataRole.UserRole + 5
+RANK_ICON_URL_ROLE = Qt.ItemDataRole.UserRole + 6
+PEAK_ICON_URL_ROLE = Qt.ItemDataRole.UserRole + 7
+TOOLTIP_ASSETS_ROLE = Qt.ItemDataRole.UserRole + 8
 
 # Team backgrounds (subtle tint applied to the row).
 TEAM_ROW_COLORS: Dict[str, QColor] = {
@@ -151,12 +168,16 @@ class TrackerPage(QWidget):
     # Glow ranks: Immortal 1+ and Radiant. NUMBERTORANKS index >= 24.
     GLOW_RANK_THRESHOLD = 24
 
+    AGENT_ICON_SIZE = QSize(22, 22)
+    RANK_ICON_SIZE = QSize(20, 20)
+
     def __init__(
         self,
         on_start,
         on_stop,
         image_cache: Optional[ImageCache] = None,
         stats_repo: Optional[StatsRepository] = None,
+        asset_registry: Optional[AssetRegistry] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -168,10 +189,18 @@ class TrackerPage(QWidget):
         self._image_cache = image_cache or ImageCache(self)
         self._image_cache.image_ready.connect(self._on_image_ready)
         self._stats_repo = stats_repo or StatsRepository()
+        self._asset_registry = asset_registry
+        if self._asset_registry is not None:
+            self._asset_registry.assets_ready.connect(self._on_assets_ready)
         self._own_puuid: str = ""
         # Track row indices of synthetic 'BLUE TEAM' / 'RED TEAM' banner rows
         # so we can apply column spans after the model is rebuilt.
         self._banner_rows: List[int] = []
+        # Last set of puuids rendered in the table; used to detect when the
+        # roster actually changed so we only fade-in then.
+        self._last_puuid_set: set[str] = set()
+        self._fade_animation: Optional[QPropertyAnimation] = None
+        self._fade_effect: Optional[QGraphicsOpacityEffect] = None
 
         self._build_layout()
         self._update_buttons()
@@ -335,7 +364,12 @@ class TrackerPage(QWidget):
                 header_view.setSectionResizeMode(
                     index, QHeaderView.ResizeMode.Interactive
                 )
-                self._player_table.setColumnWidth(index, 120)
+                self._player_table.setColumnWidth(index, 144)
+            elif key == "agent":
+                header_view.setSectionResizeMode(
+                    index, QHeaderView.ResizeMode.Interactive
+                )
+                self._player_table.setColumnWidth(index, 116)
             elif key == "skin":
                 header_view.setSectionResizeMode(
                     index, QHeaderView.ResizeMode.Interactive
@@ -563,6 +597,13 @@ class TrackerPage(QWidget):
         table_flags = cfg.get("table") or {}
 
         rows = list(players.values())
+        new_puuid_set = {
+            str(p.get("puuid") or "")
+            for p in rows
+            if p.get("puuid")
+        }
+        roster_changed = new_puuid_set != self._last_puuid_set
+        self._last_puuid_set = new_puuid_set
 
         def _rank_idx(p: Dict[str, Any]) -> int:
             r = p.get("rank")
@@ -609,7 +650,28 @@ class TrackerPage(QWidget):
                 )
         # Make the banner rows span the full width of the table.
         self._refresh_banner_spans()
+        if roster_changed:
+            self._play_table_fade_in()
         return
+
+    def _play_table_fade_in(self) -> None:
+        """Fade the player table from translucent to opaque on roster change."""
+
+        if self._fade_animation is not None:
+            self._fade_animation.stop()
+        effect = self._fade_effect
+        if effect is None:
+            effect = QGraphicsOpacityEffect(self._player_table)
+            self._player_table.setGraphicsEffect(effect)
+            self._fade_effect = effect
+        effect.setOpacity(0.25)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(280)
+        animation.setStartValue(0.25)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.start()
+        self._fade_animation = animation
 
     def _append_player_row(
         self,
@@ -631,20 +693,38 @@ class TrackerPage(QWidget):
         )
         row_items: List[QStandardItem] = []
         skin_url = self._skin_icon_url(player, weapon_choice)
+        agent_icon_url = self._agent_icon_url(player.get("agent"))
+        rank_icon_url = self._rank_icon_url(player.get("rank"))
+        peak_icon_url = self._rank_icon_url(player.get("peakRank"))
         for key, _label in PLAYER_COLUMNS:
             value = self._cell_for(
                 key, player, table_flags, weapon_choice, rr_delta
             )
             item = QStandardItem(value)
             item.setEditable(False)
+            if key == "agent" and agent_icon_url:
+                item.setData(agent_icon_url, AGENT_ICON_URL_ROLE)
+                pix = self._image_cache.request(agent_icon_url)
+                if pix is not None:
+                    item.setIcon(QIcon(self._scale_to(pix, self.AGENT_ICON_SIZE)))
             if key == "rank":
                 color = _rank_color(value)
                 if color is not None:
                     item.setForeground(color)
+                if rank_icon_url:
+                    item.setData(rank_icon_url, RANK_ICON_URL_ROLE)
+                    pix = self._image_cache.request(rank_icon_url)
+                    if pix is not None:
+                        item.setIcon(QIcon(self._scale_to(pix, self.RANK_ICON_SIZE)))
             if key == "peakRank":
                 color = _rank_color(value)
                 if color is not None:
                     item.setForeground(color)
+                if peak_icon_url:
+                    item.setData(peak_icon_url, PEAK_ICON_URL_ROLE)
+                    pix = self._image_cache.request(peak_icon_url)
+                    if pix is not None:
+                        item.setIcon(QIcon(self._scale_to(pix, self.RANK_ICON_SIZE)))
             if key == "rrDelta":
                 if rr_delta is not None and rr_delta > 0:
                     item.setForeground(QColor("#5fcf80"))
@@ -806,7 +886,53 @@ class TrackerPage(QWidget):
     ) -> str:
         bits: List[str] = []
         name = self._format_name(player)
-        bits.append(f"<b>{name}</b>")
+
+        # Header row: agent / rank icon (if cached) next to the name.
+        header_imgs: List[str] = []
+        for url, height in (
+            (self._agent_icon_url(player.get("agent")), 22),
+            (self._rank_icon_url(player.get("rank")), 22),
+        ):
+            if not url:
+                continue
+            path = self._image_cache._disk_path(url)  # noqa: SLF001
+            import os as _os
+            if _os.path.exists(path):
+                header_imgs.append(
+                    f'<img src="{path}" height="{height}" '
+                    f'style="vertical-align:middle;margin-right:6px;">'
+                )
+        bits.append(
+            "".join(header_imgs) + f"<b style='font-size:13px'>{name}</b>"
+        )
+
+        # Big player card preview if we have one cached on disk.
+        card_url = str(player.get("playerCard") or "")
+        if card_url:
+            card_path = self._image_cache._disk_path(card_url)  # noqa: SLF001
+            import os as _os
+            if _os.path.exists(card_path):
+                bits.append(
+                    f'<img src="{card_path}" width="220" '
+                    f'style="margin-top:4px;border-radius:4px;">'
+                )
+
+        team = str(player.get("team") or "").strip().capitalize()
+        agent = _strip_ansi(str(player.get("agent") or "")).strip()
+        rank_name = self._format_rank(player.get("rank"))
+        meta_parts: List[str] = []
+        if agent:
+            meta_parts.append(f"<b>{agent}</b>")
+        if rank_name and rank_name != "\u2014":
+            meta_parts.append(rank_name)
+        if team:
+            meta_parts.append(f"Team {team}")
+        if meta_parts:
+            bits.append(
+                "<span style='color:#aab5c5'>"
+                + " \u00b7 ".join(meta_parts)
+                + "</span>"
+            )
 
         if played_with > 0:
             bits.append(
@@ -951,11 +1077,26 @@ class TrackerPage(QWidget):
         return str(url) if url else ""
 
     def _scale_avatar(self, pixmap: QPixmap) -> QPixmap:
+        return self._scale_to(pixmap, self.AVATAR_SIZE)
+
+    @staticmethod
+    def _scale_to(pixmap: QPixmap, size: QSize) -> QPixmap:
         return pixmap.scaled(
-            self.AVATAR_SIZE,
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+
+    def _agent_icon_url(self, agent: Any) -> str:
+        if self._asset_registry is None:
+            return ""
+        name = _strip_ansi(str(agent or "")).strip()
+        return self._asset_registry.agent_icon_url(name)
+
+    def _rank_icon_url(self, rank: Any) -> str:
+        if self._asset_registry is None or not isinstance(rank, int):
+            return ""
+        return self._asset_registry.rank_icon_url(rank)
 
     def _skin_tooltip(self, name: str, url: str) -> str:
         # Qt accepts <img> in rich text tooltips when given a local file path
@@ -997,6 +1138,52 @@ class TrackerPage(QWidget):
                 skin_item.setToolTip(
                     self._skin_tooltip(skin_item.text(), url)
                 )
+            agent_item = self._player_model.item(row, AGENT_COLUMN)
+            if agent_item is not None and agent_item.data(AGENT_ICON_URL_ROLE) == url:
+                agent_item.setIcon(
+                    QIcon(self._scale_to(pixmap, self.AGENT_ICON_SIZE))
+                )
+            rank_item = self._player_model.item(row, RANK_COLUMN)
+            if rank_item is not None and rank_item.data(RANK_ICON_URL_ROLE) == url:
+                rank_item.setIcon(
+                    QIcon(self._scale_to(pixmap, self.RANK_ICON_SIZE))
+                )
+            peak_item = self._player_model.item(row, PEAK_COLUMN)
+            if peak_item is not None and peak_item.data(PEAK_ICON_URL_ROLE) == url:
+                peak_item.setIcon(
+                    QIcon(self._scale_to(pixmap, self.RANK_ICON_SIZE))
+                )
+
+    def _on_assets_ready(self) -> None:
+        """Asset URLs from valorant-api just arrived \u2014 refresh icons.
+
+        We pre-warm the cache for every visible row so users see the new
+        icons populate without having to wait for the next heartbeat.
+        """
+
+        for row in range(self._player_model.rowCount()):
+            agent_item = self._player_model.item(row, AGENT_COLUMN)
+            rank_item = self._player_model.item(row, RANK_COLUMN)
+            peak_item = self._player_model.item(row, PEAK_COLUMN)
+            if agent_item is not None and not agent_item.data(AGENT_ICON_URL_ROLE):
+                url = self._agent_icon_url(agent_item.text())
+                if url:
+                    agent_item.setData(url, AGENT_ICON_URL_ROLE)
+                    pix = self._image_cache.request(url)
+                    if pix is not None:
+                        agent_item.setIcon(
+                            QIcon(self._scale_to(pix, self.AGENT_ICON_SIZE))
+                        )
+            for item, role, size in (
+                (rank_item, RANK_ICON_URL_ROLE, self.RANK_ICON_SIZE),
+                (peak_item, PEAK_ICON_URL_ROLE, self.RANK_ICON_SIZE),
+            ):
+                if item is None or item.data(role):
+                    continue
+                # We can't recover the rank int from the rendered text alone
+                # without parsing it, so skip pre-warming here \u2014 the
+                # next heartbeat will set the URL.
+                del size
 
     def _row_lookup(self, row: int) -> tuple[str, str]:
         name_item = self._player_model.item(row, NAME_COLUMN)

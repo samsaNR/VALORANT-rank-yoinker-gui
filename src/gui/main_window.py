@@ -33,8 +33,10 @@ from src.gui.pages.logs import LogsPage
 from src.gui.pages.stats import StatsPage
 from src.gui.pages.tracker import TrackerPage
 from src.gui.stats_repo import StatsRepository
+from src.gui.workers.asset_registry import AssetRegistry
 from src.gui.workers.global_hotkey import GlobalHotkey
 from src.gui.workers.image_cache import ImageCache
+from src.gui.workers.notifier import SoundNotifier
 from src.gui.workers.tracker_client import TrackerClient
 from src.gui.workers.tracker_runner import TrackerRunner
 
@@ -71,18 +73,25 @@ class MainWindow(QMainWindow):
         self._tracker_runner = TrackerRunner(self)
         self._tracker_client = TrackerClient(self)
         self._image_cache = ImageCache(self)
+        self._asset_registry = AssetRegistry(self)
+        self._sound_notifier = SoundNotifier(self)
         self._stats_repo = StatsRepository()
         self._tray: Optional[QSystemTrayIcon] = None
         self._hotkey: Optional[GlobalHotkey] = None
         self._force_quit = False
+        self._sidebar_collapsed = False
 
         self._tracker_page = TrackerPage(
             on_start=self._on_start_tracker,
             on_stop=self._on_stop_tracker,
             image_cache=self._image_cache,
             stats_repo=self._stats_repo,
+            asset_registry=self._asset_registry,
         )
-        self._loadouts_page = LoadoutsPage(image_cache=self._image_cache)
+        self._loadouts_page = LoadoutsPage(
+            image_cache=self._image_cache,
+            asset_registry=self._asset_registry,
+        )
         self._history_page = HistoryPage(stats_repo=self._stats_repo)
         self._stats_page = StatsPage(stats_repo=self._stats_repo)
         self._config_page = ConfigurationPage()
@@ -105,6 +114,8 @@ class MainWindow(QMainWindow):
         self._wire_workers()
         self._setup_tray()
         self._setup_hotkey()
+        # Pull agent / rank / skin metadata from valorant-api in the background.
+        self._asset_registry.start()
 
     # ----------------------------------------------------------- layout
     def _build_layout(self) -> None:
@@ -138,19 +149,27 @@ class MainWindow(QMainWindow):
         self._connection_label.setProperty("connected", "false")
         status.addPermanentWidget(self._connection_label)
 
+    SIDEBAR_WIDTH_FULL = 232
+    SIDEBAR_WIDTH_COLLAPSED = 64
+
     def _build_sidebar(self) -> QFrame:
         from PySide6.QtCore import QSize
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(232)
+        sidebar.setFixedWidth(self.SIDEBAR_WIDTH_FULL)
+        self._sidebar = sidebar
 
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(0, 22, 0, 18)
+        layout.setContentsMargins(0, 16, 0, 18)
         layout.setSpacing(2)
 
+        # Brand block + collapse toggle on the right.
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(20, 0, 12, 14)
+        header_row.setSpacing(8)
         brand_box = QVBoxLayout()
-        brand_box.setContentsMargins(20, 0, 20, 16)
+        brand_box.setContentsMargins(0, 0, 0, 0)
         brand_box.setSpacing(2)
         title = QLabel("vRY")
         title.setObjectName("brandTitle")
@@ -158,9 +177,24 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("VALORANT rank yoinker")
         subtitle.setObjectName("brandSubtitle")
         brand_box.addWidget(subtitle)
-        layout.addLayout(brand_box)
+        self._sidebar_brand_widgets: List[QLabel] = [title, subtitle]
+        header_row.addLayout(brand_box, 1)
+
+        toggle = QPushButton()
+        toggle.setObjectName("sidebarToggle")
+        toggle.setIcon(svg_icon("chevron_left", color="#aab5c5"))
+        toggle.setIconSize(QSize(18, 18))
+        toggle.setFixedSize(28, 28)
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle.setToolTip("Collapse sidebar")
+        toggle.clicked.connect(self._toggle_sidebar)
+        self._sidebar_toggle = toggle
+        header_row.addWidget(toggle, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(header_row)
 
         self._nav_buttons: List[QPushButton] = []
+        self._nav_button_labels: List[str] = []
+        self._sidebar_section_labels: List[QLabel] = []
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
 
@@ -172,6 +206,7 @@ class MainWindow(QMainWindow):
                     layout.addSpacing(10)
                 section_label = QLabel(section_starts[index])
                 section_label.setObjectName("sidebarSection")
+                self._sidebar_section_labels.append(section_label)
                 layout.addWidget(section_label)
             button = QPushButton(" " + label)
             button.setObjectName("navButton")
@@ -179,21 +214,62 @@ class MainWindow(QMainWindow):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setIcon(svg_icon(icon_name, color="#aab5c5"))
             button.setIconSize(QSize(18, 18))
+            button.setToolTip(label)
             button.clicked.connect(
                 lambda _checked=False, idx=index: self._show_page(idx)
             )
             self._nav_buttons.append(button)
+            self._nav_button_labels.append(label)
             self._nav_group.addButton(button, index)
             layout.addWidget(button)
 
         self._nav_buttons[0].setChecked(True)
         layout.addStretch(1)
 
+        # Author credit + version footer (collapses with the sidebar).
+        credit_label = QLabel(
+            "made by <a href=\"https://t.me/rinonrc\" "
+            "style=\"color:#ff4655;text-decoration:none;\">@rinonrc</a>"
+        )
+        credit_label.setObjectName("sidebarCredit")
+        credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        credit_label.setOpenExternalLinks(True)
+        credit_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(credit_label)
+        self._sidebar_credit = credit_label
+
         version_label = QLabel(f"v{version}")
         version_label.setObjectName("sidebarVersion")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
+        self._sidebar_version = version_label
         return sidebar
+
+    def _toggle_sidebar(self) -> None:
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        self._sidebar.setFixedWidth(
+            self.SIDEBAR_WIDTH_COLLAPSED
+            if self._sidebar_collapsed
+            else self.SIDEBAR_WIDTH_FULL
+        )
+        # Hide the text labels but keep the icons.
+        for label in self._sidebar_brand_widgets:
+            label.setVisible(not self._sidebar_collapsed)
+        for label in self._sidebar_section_labels:
+            label.setVisible(not self._sidebar_collapsed)
+        self._sidebar_credit.setVisible(not self._sidebar_collapsed)
+        self._sidebar_version.setVisible(not self._sidebar_collapsed)
+        for button, label in zip(self._nav_buttons, self._nav_button_labels):
+            button.setText("" if self._sidebar_collapsed else " " + label)
+        self._sidebar_toggle.setIcon(
+            svg_icon(
+                "chevron_right" if self._sidebar_collapsed else "chevron_left",
+                color="#aab5c5",
+            )
+        )
+        self._sidebar_toggle.setToolTip(
+            "Expand sidebar" if self._sidebar_collapsed else "Collapse sidebar"
+        )
 
     # ----------------------------------------------------------- wiring
     def _wire_workers(self) -> None:
@@ -245,6 +321,12 @@ class MainWindow(QMainWindow):
 
     def _on_heartbeat(self, payload: dict) -> None:
         own = str(payload.get("puuid") or "").strip()
+        # Always run through the sound notifier so match start / end chimes
+        # fire even if the heartbeat carries no own-puuid yet (e.g. early
+        # MENUS payload).
+        state = str(payload.get("state") or "").strip()
+        if state:
+            self._sound_notifier.update_state(state)
         if not own:
             return
         self._history_page.set_own_puuid(own)

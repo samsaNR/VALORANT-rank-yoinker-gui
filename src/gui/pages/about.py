@@ -14,6 +14,8 @@ from src.gui.pages._common import card, page_header
 PROJECT_URL = "https://github.com/zayKenyon/VALORANT-rank-yoinker"
 DISCORD_URL = "https://discord.gg/HeTKed64Ka"
 DOCS_URL = "https://vry.netlify.app/matchLoadouts"
+GUI_FORK_URL = "https://github.com/samsaNR/VALORANT-rank-yoinker-gui"
+TELEGRAM_URL = "https://t.me/rinonrc"
 
 
 class AboutPage(QWidget):
@@ -44,6 +46,19 @@ class AboutPage(QWidget):
         info.setProperty("muted", True)
         layout.addWidget(card(info, title="Project"))
 
+        credits = QLabel(
+            "GUI built by <a href=\"" + TELEGRAM_URL + "\" "
+            "style=\"color:#ff4655;text-decoration:none;\">@rinonrc</a> "
+            "(Telegram). Source on "
+            "<a href=\"" + GUI_FORK_URL + "\" "
+            "style=\"color:#ff4655;text-decoration:none;\">GitHub</a>. "
+            "Original tracker by zayKenyon."
+        )
+        credits.setOpenExternalLinks(True)
+        credits.setWordWrap(True)
+        credits.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(card(credits, title="Credits"))
+
         disclaimer = QLabel(
             "This project is not associated or endorsed by Riot Games. "
             "Riot Games and all associated properties are trademarks or "
@@ -57,7 +72,9 @@ class AboutPage(QWidget):
         button_row.setSpacing(10)
 
         for label, url in (
-            ("GitHub", PROJECT_URL),
+            ("GitHub (GUI fork)", GUI_FORK_URL),
+            ("Telegram @rinonrc", TELEGRAM_URL),
+            ("Upstream GitHub", PROJECT_URL),
             ("Discord", DISCORD_URL),
             ("Match Loadouts", DOCS_URL),
         ):
