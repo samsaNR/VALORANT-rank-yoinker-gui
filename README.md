@@ -64,10 +64,6 @@ console tracker, but in a real UI.
 - **Right-click menu** &mdash; copy name, open in tracker.gg / blitz.gg,
   jump to a player's loadout card.
 
-## Screenshots
-
-> _Add your own screenshots to the `assets/` folder and reference them
-> here, e.g. `![Tracker](assets/tracker.png)`._
 
 ## Quick start
 
