@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import time
 import urllib.parse
@@ -51,6 +53,7 @@ from src.gui.config_io import load_config
 from src.gui.icons import svg_icon
 from src.gui.pages._common import card, page_header
 from src.gui.stats_repo import StatsRepository
+from src.gui.utils import chat_history_path
 from src.gui.workers.asset_registry import AssetRegistry
 from src.gui.workers.image_cache import ImageCache
 
@@ -324,6 +327,9 @@ class TrackerPage(QWidget):
         self._update_buttons()
         self._update_state_pill("MENUS")
         self._update_connection_pill(False)
+        # Restore previous chat session so users can scroll back through
+        # earlier matches after a restart.
+        self._load_chat_history()
 
     # ----------------------------------------------------------- layout
     def _build_layout(self) -> None:
@@ -393,6 +399,16 @@ class TrackerPage(QWidget):
         self._stop_btn.clicked.connect(self._on_stop)
         top.addWidget(self._stop_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        self._chat_toggle_btn = QPushButton(" Hide chat")
+        self._chat_toggle_btn.setObjectName("ghost")
+        self._chat_toggle_btn.setCheckable(True)
+        self._chat_toggle_btn.setIcon(svg_icon("message", color="#aab5c5"))
+        self._chat_toggle_btn.setIconSize(QSize(14, 14))
+        self._chat_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._chat_toggle_btn.setToolTip("Toggle in-match chat panel")
+        self._chat_toggle_btn.toggled.connect(self._on_chat_toggle)
+        top.addWidget(self._chat_toggle_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
         outer.addLayout(top)
 
         bottom = QHBoxLayout()
@@ -418,10 +434,14 @@ class TrackerPage(QWidget):
         splitter.setHandleWidth(6)
 
         splitter.addWidget(self._build_player_table())
-        splitter.addWidget(self._build_chat_panel())
+        self._chat_panel_widget = self._build_chat_panel()
+        splitter.addWidget(self._chat_panel_widget)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([900, 260])
+        self._body_splitter = splitter
+        # Remember last user-set chat width so re-show restores it.
+        self._chat_panel_visible_width = 260
         return splitter
 
     def _build_player_table(self) -> QWidget:
@@ -540,9 +560,21 @@ class TrackerPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(6)
         header = QLabel("Game chat")
         header.setObjectName("statLabel")
-        layout.addWidget(header)
+        header_row.addWidget(header)
+        header_row.addStretch(1)
+
+        self._chat_clear_button = QPushButton("Clear")
+        self._chat_clear_button.setObjectName("chatClearButton")
+        self._chat_clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._chat_clear_button.setToolTip("Clear saved chat history")
+        self._chat_clear_button.clicked.connect(self._clear_chat_history)
+        header_row.addWidget(self._chat_clear_button)
+        layout.addLayout(header_row)
 
         # Custom scrollable column of chat bubbles, instead of a plain
         # QListWidget with one-line items, so multiline messages, channel
@@ -618,6 +650,13 @@ class TrackerPage(QWidget):
             return
 
         self._chat_empty.hide()
+        self._render_chat_bubble(payload)
+        self._save_chat_history()
+
+        bar = self._chat_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _render_chat_bubble(self, payload: Dict[str, Any]) -> None:
         timestamp = payload.get("time")
         if isinstance(timestamp, (int, float)) and timestamp > 0:
             stamp = datetime.fromtimestamp(timestamp).strftime("%H:%M")
@@ -643,8 +682,70 @@ class TrackerPage(QWidget):
             if old_widget is not None:
                 old_widget.deleteLater()
 
-        bar = self._chat_scroll.verticalScrollBar()
-        bar.setValue(bar.maximum())
+    # --------------------------------------------------- chat persistence
+    def _load_chat_history(self) -> None:
+        path = chat_history_path()
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, list):
+            return
+        for entry in data[-self.CHAT_LIMIT:]:
+            if isinstance(entry, dict):
+                self._chat_history.append(entry)
+                self._render_chat_bubble(entry)
+        if self._chat_history:
+            self._chat_empty.hide()
+            bar = self._chat_scroll.verticalScrollBar()
+            bar.setValue(bar.maximum())
+
+    def _save_chat_history(self) -> None:
+        path = chat_history_path()
+        if not path:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(list(self._chat_history), fh, ensure_ascii=False)
+        except OSError:
+            # Persistence is best-effort: never crash the UI on disk errors.
+            pass
+
+    def _clear_chat_history(self) -> None:
+        self._chat_history.clear()
+        # Drop every bubble (skip the trailing stretch at index count-1).
+        while self._chat_layout.count() > 1:
+            item = self._chat_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self._chat_empty.show()
+        path = chat_history_path()
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def _on_chat_toggle(self, hidden: bool) -> None:
+        if not hasattr(self, "_body_splitter"):
+            return
+        if hidden:
+            sizes = self._body_splitter.sizes()
+            if len(sizes) >= 2 and sizes[1] > 0:
+                self._chat_panel_visible_width = sizes[1]
+            self._chat_panel_widget.hide()
+            self._chat_toggle_btn.setText(" Show chat")
+        else:
+            self._chat_panel_widget.show()
+            total = sum(self._body_splitter.sizes()) or 1200
+            chat_w = max(220, getattr(self, "_chat_panel_visible_width", 260))
+            self._body_splitter.setSizes([max(total - chat_w, 400), chat_w])
+            self._chat_toggle_btn.setText(" Hide chat")
 
     def _build_chat_bubble(
         self, stamp: str, group: str, speaker: str, text: str

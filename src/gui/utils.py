@@ -38,3 +38,12 @@ def stats_path() -> str | None:
     if not base:
         return None
     return os.path.join(base, "vry", "stats.json")
+
+
+def chat_history_path() -> str | None:
+    """Return the path used to persist the live chat panel between runs."""
+
+    base = os.getenv("APPDATA") or os.path.expanduser("~/.vry")
+    if not base:
+        return None
+    return os.path.join(base, "vry", "chat_history.json")

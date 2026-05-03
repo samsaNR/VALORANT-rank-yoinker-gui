@@ -207,6 +207,40 @@ QPushButton#danger:hover {{
     color: white;
 }}
 
+QPushButton#ghost {{
+    background-color: transparent;
+    border: 1px solid {BORDER};
+    color: {MUTED};
+    font-weight: 600;
+    padding: 9px 16px;
+    border-radius: 6px;
+}}
+
+QPushButton#ghost:hover {{
+    border-color: {ACCENT};
+    color: {TEXT};
+}}
+
+QPushButton#ghost:checked {{
+    background-color: rgba(255, 70, 85, 0.12);
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+
+QPushButton#chatClearButton {{
+    background-color: transparent;
+    border: 1px solid {BORDER};
+    color: {MUTED};
+    padding: 3px 10px;
+    border-radius: 5px;
+    font-size: 11px;
+}}
+
+QPushButton#chatClearButton:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT};
+}}
+
 QFrame#card {{
     background-color: {PANEL};
     border: 1px solid {BORDER};
