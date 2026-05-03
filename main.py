@@ -485,20 +485,18 @@ try:
                                         )
 
                         party_icon = ""
+                        partyNum = 0
                         # set party premade icon
                         for party in partyOBJ:
                             if player["Subject"] in partyOBJ[party]:
                                 if party not in partyIcons:
-                                    partyIcons.update(
-                                        {party: PARTYICONLIST[partyCount]}
-                                    )
-                                    # PARTY_ICON
-                                    party_icon = PARTYICONLIST[partyCount]
-                                    partyNum = partyCount + 1
+                                    partyIcons[party] = PARTYICONLIST[partyCount]
                                     partyCount += 1
-                                else:
-                                    # PARTY_ICON
-                                    party_icon = partyIcons[party]
+                                # PARTY_ICON
+                                party_icon = partyIcons[party]
+                                # Stable party index for this party_id.
+                                partyNum = list(partyIcons).index(party) + 1
+                                break
                         playerRank, previousPlayerRank, ppstats = get_or_fetch_rank_and_stats(
                             player["Subject"], coregame_match_id
                         )
@@ -650,7 +648,7 @@ try:
                         heartbeat_data["players"][player["Subject"]] = {
                             "puuid": player["Subject"],
                             "name": names[player["Subject"]],
-                            "partyNumber": partyNum if party_icon != "" else 0,
+                            "partyNumber": partyNum,
                             "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
                             "rank": playerRank["rank"],
                             "peakRank": playerRank["peakrank"],
@@ -732,21 +730,19 @@ try:
                         )
                         playersLoaded += 1
                         party_icon = ""
+                        partyNum = 0
 
                         # set party premade icon
                         for party in partyOBJ:
                             if player["Subject"] in partyOBJ[party]:
                                 if party not in partyIcons:
-                                    partyIcons.update(
-                                        {party: PARTYICONLIST[partyCount]}
-                                    )
-                                    # PARTY_ICON
-                                    party_icon = PARTYICONLIST[partyCount]
-                                    partyNum = partyCount + 1
-                                else:
-                                    # PARTY_ICON
-                                    party_icon = partyIcons[party]
-                                partyCount += 1
+                                    partyIcons[party] = PARTYICONLIST[partyCount]
+                                    partyCount += 1
+                                # PARTY_ICON
+                                party_icon = partyIcons[party]
+                                # Stable party index for this party_id.
+                                partyNum = list(partyIcons).index(party) + 1
+                                break
                         playerRank, previousPlayerRank, ppstats = get_or_fetch_rank_and_stats(
                             player["Subject"], pregame_match_id
                         )
@@ -905,7 +901,7 @@ try:
 
                         heartbeat_data["players"][player["Subject"]] = {
                             "name": names[player["Subject"]],
-                            "partyNumber": partyNum if party_icon != "" else 0,
+                            "partyNumber": partyNum,
                             "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
                             "rank": playerRank["rank"],
                             "peakRank": playerRank["peakrank"],

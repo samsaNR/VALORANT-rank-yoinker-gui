@@ -1,4 +1,4 @@
-"""Live tracker page \u2014 receives heartbeats from the websocket server."""
+"""Live tracker page - receives heartbeats from the websocket server."""
 
 from __future__ import annotations
 
@@ -59,6 +59,27 @@ _ANSI_RE = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
 
 def _strip_ansi(value: str) -> str:
     return _ANSI_RE.sub("", value) if isinstance(value, str) else value
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    """Best-effort numeric coercion that survives strings like '23%' or '1.45'."""
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().rstrip("%").replace(",", ".")
+    if not text or text == "-":
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    f = _coerce_float(value)
+    return int(f) if f is not None else None
 
 # Visual constants
 GAME_STATES = ("MENUS", "PREGAME", "INGAME", "DISCONNECTED")
@@ -130,6 +151,103 @@ def _rank_color(rank_name: str) -> Optional[QColor]:
     return None
 
 
+# ----------------------------------------------------------- gradient helpers
+# Visual gradient palette: dark red -> amber -> green -> cyan
+# (re-used for headshot %, win rate, K/D and account level so the table
+# scans at a glance like vry's console output).
+def _interp(c0: tuple[int, int, int], c1: tuple[int, int, int], t: float) -> QColor:
+    t = max(0.0, min(1.0, t))
+    r = int(c0[0] + (c1[0] - c0[0]) * t)
+    g = int(c0[1] + (c1[1] - c0[1]) * t)
+    b = int(c0[2] + (c1[2] - c0[2]) * t)
+    return QColor(r, g, b)
+
+
+def _stop_gradient(value: float, stops: list[tuple[float, tuple[int, int, int]]]) -> QColor:
+    """Map ``value`` to a colour using piecewise-linear stops.
+
+    ``stops`` is sorted by threshold ascending; values below/above the
+    end stops clamp to the corresponding colour.
+    """
+
+    if value <= stops[0][0]:
+        return QColor(*stops[0][1])
+    if value >= stops[-1][0]:
+        return QColor(*stops[-1][1])
+    for (lo_v, lo_c), (hi_v, hi_c) in zip(stops, stops[1:]):
+        if lo_v <= value <= hi_v:
+            t = (value - lo_v) / (hi_v - lo_v) if hi_v != lo_v else 0.0
+            return _interp(lo_c, hi_c, t)
+    return QColor(*stops[-1][1])
+
+
+# Dark red -> yellow -> green -> white-ish.
+_RED = (220, 80, 80)
+_AMBER = (235, 188, 80)
+_GREEN = (80, 200, 110)
+_TEAL = (140, 230, 220)
+_MUTED = (170, 181, 197)
+
+
+def _hs_color(hs: float) -> QColor:
+    """Headshot % gradient - 0%'6%-30% sweet spot, 50%+ excellent."""
+
+    return _stop_gradient(
+        hs,
+        [(0.0, _RED), (15.0, _AMBER), (28.0, _GREEN), (45.0, _TEAL)],
+    )
+
+
+def _wr_color(wr: float) -> QColor:
+    """Win % gradient - below 45 = red, 50 = neutral, 60+ = great."""
+
+    return _stop_gradient(
+        wr,
+        [(0.0, _RED), (45.0, _AMBER), (52.0, _GREEN), (65.0, _TEAL)],
+    )
+
+
+def _kd_color(kd: float) -> QColor:
+    """K/D gradient - 1.0 is neutral, 1.3+ is excellent."""
+
+    return _stop_gradient(
+        kd,
+        [(0.6, _RED), (1.0, _AMBER), (1.2, _GREEN), (1.6, _TEAL)],
+    )
+
+
+def _level_color(level: int) -> QColor:
+    """Account level gradient - mirrors the console's level_to_color."""
+
+    if level >= 400:
+        return QColor(102, 212, 212)
+    if level >= 300:
+        return QColor(207, 207, 76)
+    if level >= 200:
+        return QColor(120, 138, 230)
+    if level >= 100:
+        return QColor(241, 144, 54)
+    return QColor(*_MUTED)
+
+
+# Per-party colour palette for the "P1/P2/P3" badge so partied players
+# are visually grouped.
+_PARTY_COLORS = (
+    "#ff7782",  # red-pink
+    "#3aa6c2",  # teal
+    "#f0b938",  # gold
+    "#a98aff",  # purple
+    "#5fcf80",  # green
+    "#ff9e57",  # orange
+)
+
+
+def _party_color(number: int) -> QColor:
+    if number <= 0:
+        return QColor("#5b6573")
+    return QColor(_PARTY_COLORS[(number - 1) % len(_PARTY_COLORS)])
+
+
 class StatBadge(QFrame):
     """Small panel that shows a label + bold value (used in the status row)."""
 
@@ -146,12 +264,12 @@ class StatBadge(QFrame):
         self._label.setObjectName("statLabel")
         layout.addWidget(self._label)
 
-        self._value = QLabel("\u2014")
+        self._value = QLabel("-")
         self._value.setObjectName("statValue")
         layout.addWidget(self._value)
 
     def set_value(self, value: str) -> None:
-        self._value.setText(value if value else "\u2014")
+        self._value.setText(value if value else "-")
 
 
 class TrackerPage(QWidget):
@@ -238,7 +356,7 @@ class TrackerPage(QWidget):
         title_label.setObjectName("pageTitle")
         title_box.addWidget(title_label)
         subtitle_label = QLabel(
-            "Real-time match data \u2014 ranks, skins, chat and more."
+            "Real-time match data - ranks, skins, chat and more."
         )
         subtitle_label.setObjectName("pageSubtitle")
         title_box.addWidget(subtitle_label)
@@ -380,7 +498,7 @@ class TrackerPage(QWidget):
 
         self._players_empty = self._build_empty_state(
             "Waiting for game data",
-            "Start the tracker and join a match \u2014 player rows will appear here.",
+            "Start the tracker and join a match - player rows will appear here.",
         )
         layout.addWidget(self._players_empty)
         return container
@@ -471,16 +589,16 @@ class TrackerPage(QWidget):
         state = str(payload.get("state") or "MENUS").upper()
         self._update_state_pill(state)
 
-        mode = payload.get("mode") or "\u2014"
+        mode = payload.get("mode") or "-"
         self._mode_badge.set_value(str(mode))
 
         map_value = payload.get("map")
         if isinstance(map_value, (list, tuple)) and map_value:
             map_value = map_value[0]
         if isinstance(map_value, str):
-            map_name = map_value.rsplit("/", 1)[-1].split(".", 1)[0] or "\u2014"
+            map_name = map_value.rsplit("/", 1)[-1].split(".", 1)[0] or "-"
         else:
-            map_name = "\u2014"
+            map_name = "-"
         self._map_badge.set_value(map_name)
 
         timestamp = payload.get("time")
@@ -733,6 +851,50 @@ class TrackerPage(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if key in ("rr", "level", "kd", "headshotPercentage"):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if key == "headshotPercentage":
+                hs_val = _coerce_float(player.get("headshotPercentage"))
+                if hs_val is not None:
+                    item.setForeground(_hs_color(hs_val))
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+            if key == "winPercentage":
+                wr_val = _coerce_float(player.get("winPercentage"))
+                if wr_val is not None:
+                    item.setForeground(_wr_color(wr_val))
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+            if key == "kd":
+                kd_val = _coerce_float(player.get("kd"))
+                if kd_val is not None:
+                    item.setForeground(_kd_color(kd_val))
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+            if key == "level":
+                lvl_val = _coerce_int(player.get("level"))
+                if lvl_val is not None:
+                    item.setForeground(_level_color(lvl_val))
+                    if lvl_val >= 200:
+                        f = item.font()
+                        f.setBold(True)
+                        item.setFont(f)
+            if key == "party":
+                number = player.get("partyNumber") or 0
+                if number:
+                    color = _party_color(number)
+                    item.setForeground(color)
+                    rgb = color.toTuple()[:3]
+                    item.setBackground(QBrush(QColor(rgb[0], rgb[1], rgb[2], 60)))
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+                    item.setToolTip(f"Party {number} (premade group)")
+                else:
+                    item.setForeground(QColor("#3a4351"))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if key == "name":
                 item.setData(player.get("puuid"), PUUID_ROLE)
                 real_name = _strip_ansi(str(player.get("name") or ""))
@@ -850,7 +1012,7 @@ class TrackerPage(QWidget):
             if not table_flags.get("rr", True):
                 return ""
             rr = player.get("rr")
-            return str(rr) if rr not in (None, "") else "\u2014"
+            return str(rr) if rr not in (None, "") else "-"
         if key == "peakRank":
             if not table_flags.get("peakrank", True):
                 return ""
@@ -858,22 +1020,22 @@ class TrackerPage(QWidget):
         if key == "winPercentage":
             if not table_flags.get("winrate", True):
                 return ""
-            return str(player.get("winPercentage") or "\u2014")
+            return str(player.get("winPercentage") or "-")
         if key == "headshotPercentage":
             if not table_flags.get("headshot_percent", True):
                 return ""
             value = player.get("headshotPercentage")
-            return str(value) if value not in (None, "") else "\u2014"
+            return str(value) if value not in (None, "") else "-"
         if key == "kd":
-            if not table_flags.get("kd", False):
+            if not table_flags.get("kd", True):
                 return ""
             value = player.get("kd")
-            return str(value) if value not in (None, "") else "\u2014"
+            return str(value) if value not in (None, "") else "-"
         if key == "level":
             if not table_flags.get("level", True):
                 return ""
             value = player.get("level")
-            return str(value) if value not in (None, "") else "\u2014"
+            return str(value) if value not in (None, "") else "-"
         return ""
 
     # ----------------------------------------------------- tooltip / glow
@@ -923,7 +1085,7 @@ class TrackerPage(QWidget):
         meta_parts: List[str] = []
         if agent:
             meta_parts.append(f"<b>{agent}</b>")
-        if rank_name and rank_name != "\u2014":
+        if rank_name and rank_name != "-":
             meta_parts.append(rank_name)
         if team:
             meta_parts.append(f"Team {team}")
@@ -1055,16 +1217,16 @@ class TrackerPage(QWidget):
     ) -> str:
         entry = cls._find_weapon_entry(player, weapon_choice)
         if entry is None:
-            return "\u2014"
+            return "-"
         name = entry.get("skinDisplayName") or entry.get("skin_displayName") or ""
         name = _strip_ansi(str(name)).strip()
         if not name:
-            return "\u2014"
+            return "-"
         # The API ships skins as "Reaver Vandal"; trim the trailing weapon name.
         suffix = " " + weapon_choice
         if name.lower().endswith(suffix.lower()):
             name = name[: -len(suffix)].rstrip()
-        return name or "\u2014"
+        return name or "-"
 
     @classmethod
     def _skin_icon_url(
@@ -1155,7 +1317,7 @@ class TrackerPage(QWidget):
                 )
 
     def _on_assets_ready(self) -> None:
-        """Asset URLs from valorant-api just arrived \u2014 refresh icons.
+        """Asset URLs from valorant-api just arrived - refresh icons.
 
         We pre-warm the cache for every visible row so users see the new
         icons populate without having to wait for the next heartbeat.
@@ -1181,7 +1343,7 @@ class TrackerPage(QWidget):
                 if item is None or item.data(role):
                     continue
                 # We can't recover the rank int from the rendered text alone
-                # without parsing it, so skip pre-warming here \u2014 the
+                # without parsing it, so skip pre-warming here - the
                 # next heartbeat will set the URL.
                 del size
 
@@ -1272,7 +1434,7 @@ class TrackerPage(QWidget):
         """
 
         if rank in (None, ""):
-            return "\u2014"
+            return "-"
         if isinstance(rank, bool):  # bool is a subclass of int; reject explicitly
             return str(rank)
         if isinstance(rank, int):
