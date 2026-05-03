@@ -23,12 +23,11 @@ console tracker, but in a real UI.
 ## Table of contents
 
 1. [Highlights](#highlights)
-2. [Screenshots](#screenshots)
-3. [Quick start](#quick-start)
-4. [Building a Windows .exe](#building-a-windows-exe)
-5. [Storage layout](#storage-layout)
-6. [Author](#author)
-7. [Disclaimer](#disclaimer)
+2. [Quick start](#quick-start)
+3. [Building a Windows .exe](#building-a-windows-exe)
+4. [Storage layout](#storage-layout)
+5. [Author](#author)
+6. [Disclaimer](#disclaimer)
 
 ## Highlights
 
