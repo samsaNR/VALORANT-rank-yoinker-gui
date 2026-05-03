@@ -11,9 +11,6 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 from src.constants import version
 from src.gui.pages._common import card, page_header
 
-PROJECT_URL = "https://github.com/zayKenyon/VALORANT-rank-yoinker"
-DISCORD_URL = "https://discord.gg/HeTKed64Ka"
-DOCS_URL = "https://vry.netlify.app/matchLoadouts"
 GUI_FORK_URL = "https://github.com/samsaNR/VALORANT-rank-yoinker-gui"
 TELEGRAM_URL = "https://t.me/rinonrc"
 
@@ -31,28 +28,27 @@ class AboutPage(QWidget):
         layout.addWidget(
             page_header(
                 "About",
-                f"VALORANT rank yoinker \u2014 GUI front-end (v{version}).",
+                f"vRY GUI \u2014 VALORANT match insights overlay (v{version}).",
             )
         )
 
         info = QLabel(
-            "vRY is an open-source tracker that pulls rank, peak rank, "
-            "headshot %, win rate, and skin info for everyone in your "
-            "lobby straight from the Riot client. The GUI wraps the "
-            "existing tracker so all of the same data is rendered in a "
-            "modern Qt window instead of the console."
+            "A modern Qt front-end for tracking your VALORANT lobby in real "
+            "time \u2014 ranks, peak ranks, headshot %, win rates, K/D, "
+            "skins, party groupings and in-match chat are pulled directly "
+            "from the Riot client and shown in a clean dark UI. Stats and "
+            "match history are stored locally on your machine."
         )
         info.setWordWrap(True)
         info.setProperty("muted", True)
         layout.addWidget(card(info, title="Project"))
 
         credits = QLabel(
-            "GUI built by <a href=\"" + TELEGRAM_URL + "\" "
+            "Built by <a href=\"" + TELEGRAM_URL + "\" "
             "style=\"color:#ff4655;text-decoration:none;\">@rinonrc</a> "
             "(Telegram). Source on "
             "<a href=\"" + GUI_FORK_URL + "\" "
-            "style=\"color:#ff4655;text-decoration:none;\">GitHub</a>. "
-            "Original tracker by zayKenyon."
+            "style=\"color:#ff4655;text-decoration:none;\">GitHub</a>."
         )
         credits.setOpenExternalLinks(True)
         credits.setWordWrap(True)
@@ -72,11 +68,8 @@ class AboutPage(QWidget):
         button_row.setSpacing(10)
 
         for label, url in (
-            ("GitHub (GUI fork)", GUI_FORK_URL),
+            ("GitHub", GUI_FORK_URL),
             ("Telegram @rinonrc", TELEGRAM_URL),
-            ("Upstream GitHub", PROJECT_URL),
-            ("Discord", DISCORD_URL),
-            ("Match Loadouts", DOCS_URL),
         ):
             btn = QPushButton(label)
             btn.clicked.connect(lambda _checked=False, u=url: webbrowser.open(u))

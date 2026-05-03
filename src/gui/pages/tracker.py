@@ -904,9 +904,14 @@ class TrackerPage(QWidget):
         played_with = (
             self._stats_repo.times_played_with(puuid) if puuid else 0
         )
-        rr_delta = (
-            self._stats_repo.last_rr_delta(puuid) if puuid else None
-        )
+        # Prefer the live RR change from the heartbeat (the running tracker
+        # already computes it from MMR -> matches -> RankedRatingEarned),
+        # fall back to the local stats.json delta if the heartbeat doesn't
+        # carry one yet (e.g. very old build of main.py).
+        rr_delta_raw = player.get("rrChange")
+        rr_delta = _coerce_int(rr_delta_raw) if rr_delta_raw is not None else None
+        if rr_delta is None and puuid:
+            rr_delta = self._stats_repo.last_rr_delta(puuid)
         tooltip = self._build_player_tooltip(
             player, last_match, played_with, rr_delta
         )

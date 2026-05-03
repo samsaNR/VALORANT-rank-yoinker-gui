@@ -1,6 +1,6 @@
 """Loadouts gallery \u2014 every player's full inventory in one place.
 
-Mirrors the public ``vry.netlify.app/matchLoadouts`` view but inside the GUI.
+Renders every player's full inventory directly inside the GUI.
 The data comes from the ``matchLoadout`` payload broadcast by the tracker
 (see :func:`src.Loadouts.Loadouts.convertLoadoutToJsonArray`). It contains
 each player's full weapon inventory (per weapon: ``skinDisplayName``,
@@ -333,8 +333,8 @@ class LoadoutsPage(QWidget):
         layout.addWidget(
             page_header(
                 "Loadouts",
-                "Every player's full inventory \u2014 same data as "
-                "vry.netlify.app/matchLoadouts, but local.",
+                "Every player's full inventory \u2014 weapon skins, "
+                "buddies, sprays and titles for the whole lobby.",
             )
         )
 
