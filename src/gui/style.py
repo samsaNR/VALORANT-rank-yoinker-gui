@@ -37,15 +37,16 @@ QMainWindow, QWidget#central {{
 
 QWidget#central {{
     background-color: qlineargradient(
-        x1:0, y1:0, x2:0, y2:1,
-        stop:0 {BG_ALT},
-        stop:1 {BG}
+        x1:0, y1:0, x2:1, y2:1,
+        stop:0 #0a0e15,
+        stop:0.45 #0d1320,
+        stop:1 #0b0f18
     );
 }}
 
 QFrame#sidebar {{
-    background-color: {PANEL};
-    border-right: 1px solid {BORDER};
+    background-color: rgba(17, 22, 31, 235);
+    border-right: 1px solid rgba(255, 255, 255, 16);
 }}
 
 QLabel#brandTitle {{
@@ -242,15 +243,152 @@ QPushButton#chatClearButton:hover {{
 }}
 
 QFrame#card {{
-    background-color: {PANEL};
-    border: 1px solid {BORDER};
-    border-radius: 8px;
+    background-color: rgba(22, 27, 37, 220);
+    border: 1px solid rgba(255, 255, 255, 14);
+    border-radius: 12px;
 }}
 
 QFrame#statusCard {{
-    background-color: {PANEL};
+    background-color: rgba(22, 27, 37, 230);
+    border: 1px solid rgba(255, 255, 255, 18);
+    border-radius: 14px;
+}}
+
+QFrame#mapHeroCard {{
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 22);
+}}
+
+QFrame#settingCard {{
+    background-color: rgba(22, 27, 37, 218);
+    border: 1px solid rgba(255, 255, 255, 14);
+    border-radius: 14px;
+}}
+
+QLabel#settingCardTitle {{
+    color: {TEXT};
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+}}
+
+QLabel#settingCardDescription {{
+    color: {MUTED};
+    font-size: 12px;
+    padding-bottom: 4px;
+}}
+
+QLabel#settingTitle {{
+    color: {TEXT};
+    font-size: 13px;
+    font-weight: 700;
+}}
+
+QLabel#settingDescription {{
+    color: {MUTED};
+    font-size: 11px;
+}}
+
+QFrame#settingDivider {{
+    background-color: rgba(255, 255, 255, 12);
+    border: none;
+}}
+
+QLabel#settingStatus {{
+    color: {MUTED};
+    font-size: 11px;
+}}
+
+QScrollArea#configScroll {{
+    background: transparent;
+    border: none;
+}}
+
+QWidget#configScrollBody {{
+    background: transparent;
+}}
+
+QFrame#smurfPill {{
+    background-color: rgba(240, 180, 41, 50);
+    border: 1px solid {WARNING};
+    border-radius: 4px;
+    padding: 1px 6px;
+}}
+
+QLabel#smurfPillText {{
+    color: {WARNING};
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+}}
+
+QFrame#streakPill {{
+    border-radius: 8px;
+    padding: 4px 10px;
+}}
+
+QFrame#streakPill[outcome="win"] {{
+    background-color: rgba(95, 207, 128, 36);
+    border: 1px solid {SUCCESS};
+}}
+
+QFrame#streakPill[outcome="loss"] {{
+    background-color: rgba(255, 70, 85, 36);
+    border: 1px solid {ACCENT};
+}}
+
+QFrame#streakPill[outcome="neutral"] {{
+    background-color: {PANEL_ALT};
     border: 1px solid {BORDER};
-    border-radius: 10px;
+}}
+
+QLabel#streakValue {{
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}}
+
+QFrame#mapHeroOverlay {{
+    border-radius: 14px;
+    background-color: rgba(11, 15, 21, 200);
+}}
+
+QLabel#mapHeroTitle {{
+    color: {TEXT};
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}}
+
+QLabel#mapHeroSubtitle {{
+    color: {MUTED_STRONG};
+    font-size: 12px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    font-weight: 700;
+}}
+
+QLabel#roundCounter {{
+    color: {TEXT};
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}}
+
+QLabel#roundCounterAlly {{
+    color: {SUCCESS};
+}}
+
+QLabel#roundCounterEnemy {{
+    color: {ACCENT};
+}}
+
+QLabel#roundCounterLabel {{
+    color: {MUTED};
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    font-weight: 700;
 }}
 
 QFrame#teamSection {{

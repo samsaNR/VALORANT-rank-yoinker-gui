@@ -163,6 +163,112 @@ class _RRTrendChart(QWidget):
             painter.drawEllipse(pt, 3.0, 3.0)
 
 
+class _PlayHeatmap(QWidget):
+    """7\u00d724 grid of match counts coloured by frequency.
+
+    Rows = days of the week (Mon at top, Sun at bottom). Columns = hour of
+    the day. Cell colour goes from a flat panel tone (no matches) to the
+    accent red (most matches in the dataset). A small tooltip exposes the
+    raw count on hover.
+    """
+
+    DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._counts: List[List[int]] = [[0] * 24 for _ in range(7)]
+        self._max: int = 0
+        self.setMinimumHeight(180)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setMouseTracking(True)
+
+    def set_data(self, counts: List[List[int]]) -> None:
+        self._counts = counts
+        self._max = max((max(row) for row in counts), default=0)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#181c24"))
+
+        margin_left = 38
+        margin_top = 18
+        margin_bottom = 22
+        rect = self.rect().adjusted(margin_left, margin_top, -8, -margin_bottom)
+        cell_w = rect.width() / 24.0
+        cell_h = rect.height() / 7.0
+
+        # Day labels.
+        painter.setPen(QColor("#8b95a3"))
+        painter.setFont(QFont("Segoe UI", 8))
+        for r, label in enumerate(self.DAY_LABELS):
+            y = rect.top() + r * cell_h + cell_h / 2 - 6
+            painter.drawText(0, int(y), margin_left - 6, 14,
+                             int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                             label)
+
+        # Hour labels (every 4h).
+        for h in range(0, 24, 4):
+            x = rect.left() + h * cell_w
+            painter.drawText(int(x), int(rect.bottom() + 4), int(cell_w * 4), 14,
+                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop),
+                             f"{h:02d}")
+
+        # Cells.
+        for r in range(7):
+            for h in range(24):
+                count = self._counts[r][h]
+                ratio = (count / self._max) if self._max > 0 else 0.0
+                if ratio <= 0:
+                    color = QColor("#1c2230")
+                else:
+                    # Lerp from #1c2230 -> #ff4655.
+                    base = QColor("#1c2230")
+                    accent = QColor("#ff4655")
+                    color = QColor(
+                        int(base.red() + (accent.red() - base.red()) * ratio),
+                        int(base.green() + (accent.green() - base.green()) * ratio),
+                        int(base.blue() + (accent.blue() - base.blue()) * ratio),
+                    )
+                cell_rect = (
+                    rect.left() + h * cell_w + 1,
+                    rect.top() + r * cell_h + 1,
+                    cell_w - 2,
+                    cell_h - 2,
+                )
+                painter.fillRect(
+                    int(cell_rect[0]),
+                    int(cell_rect[1]),
+                    int(cell_rect[2]),
+                    int(cell_rect[3]),
+                    color,
+                )
+
+    def event(self, event):  # noqa: N802 (Qt API), provide tooltips per cell
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Type.ToolTip:
+            pos = event.pos()
+            margin_left = 38
+            margin_top = 18
+            margin_bottom = 22
+            rect_w = self.width() - margin_left - 8
+            rect_h = self.height() - margin_top - margin_bottom
+            if rect_w > 0 and rect_h > 0:
+                cell_w = rect_w / 24.0
+                cell_h = rect_h / 7.0
+                col = int((pos.x() - margin_left) // cell_w) if cell_w > 0 else -1
+                row = int((pos.y() - margin_top) // cell_h) if cell_h > 0 else -1
+                if 0 <= col < 24 and 0 <= row < 7:
+                    self.setToolTip(
+                        f"{self.DAY_LABELS[row]} {col:02d}:00 "
+                        f"\u2014 {self._counts[row][col]} match(es)"
+                    )
+                else:
+                    self.setToolTip("")
+        return super().event(event)
+
+
 class StatsPage(QWidget):
     """RR trend + winrate breakdowns by agent and by map."""
 
@@ -187,7 +293,9 @@ class StatsPage(QWidget):
         self._stats_repo.reload()
         matches = self._collect_matches()
         self._update_summary(matches)
+        self._update_streak(matches)
         self._update_trend(matches)
+        self._update_heatmap(matches)
         self._update_breakdown(self._agent_model, self._aggregate(matches, "agent"))
         self._update_breakdown(self._map_model, self._aggregate(matches, "map"))
 
@@ -210,6 +318,24 @@ class StatsPage(QWidget):
         self._summary_label.setObjectName("pageSubtitle")
         toolbar.addWidget(self._summary_label)
         toolbar.addStretch()
+
+        # Current win/loss streak pill - sits on the right of the toolbar
+        # so it's the first thing the user sees when they open the page.
+        self._streak_pill = QFrame()
+        self._streak_pill.setObjectName("streakPill")
+        self._streak_pill.setProperty("outcome", "neutral")
+        streak_layout = QHBoxLayout(self._streak_pill)
+        streak_layout.setContentsMargins(10, 4, 10, 4)
+        streak_layout.setSpacing(8)
+        self._streak_label = QLabel("Streak")
+        self._streak_label.setObjectName("settingDescription")
+        self._streak_label.setProperty("muted", True)
+        streak_layout.addWidget(self._streak_label)
+        self._streak_value = QLabel("\u2014")
+        self._streak_value.setObjectName("streakValue")
+        streak_layout.addWidget(self._streak_value)
+        toolbar.addWidget(self._streak_pill)
+
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh)
         toolbar.addWidget(refresh_btn)
@@ -217,6 +343,9 @@ class StatsPage(QWidget):
 
         self._trend = _RRTrendChart()
         root.addWidget(card(self._trend, title="RR over time"))
+
+        self._heatmap = _PlayHeatmap()
+        root.addWidget(card(self._heatmap, title="When you play"))
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
@@ -322,6 +451,58 @@ class StatsPage(QWidget):
         self._summary_label.setText(
             f"{len(matches)} matches \u2022 W:{wins} / L:{losses} \u2022 \u0394RR {sign}{total_delta}"
         )
+
+    def _update_streak(self, matches: List[Dict[str, Any]]) -> None:
+        """Walk back from the latest match counting consecutive same-sign deltas."""
+
+        latest_first = list(reversed(matches))
+        streak = 0
+        outcome = "neutral"
+        for m in latest_first:
+            delta = m.get("_delta")
+            if not isinstance(delta, int) or delta == 0:
+                continue
+            if streak == 0:
+                outcome = "win" if delta > 0 else "loss"
+                streak = 1
+                continue
+            same_sign = (outcome == "win" and delta > 0) or (
+                outcome == "loss" and delta < 0
+            )
+            if same_sign:
+                streak += 1
+            else:
+                break
+
+        self._streak_pill.setProperty("outcome", outcome)
+        # Re-polish so the property selector kicks in.
+        self._streak_pill.style().unpolish(self._streak_pill)
+        self._streak_pill.style().polish(self._streak_pill)
+
+        if streak == 0:
+            self._streak_label.setText("Streak")
+            self._streak_value.setText("\u2014")
+            self._streak_value.setStyleSheet("color: #aab5c5;")
+        else:
+            prefix = "Win streak" if outcome == "win" else "Loss streak"
+            color = "#5fcf80" if outcome == "win" else "#ff4655"
+            arrow = "\u2191" if outcome == "win" else "\u2193"
+            self._streak_label.setText(prefix)
+            self._streak_value.setText(f"{arrow}{streak}")
+            self._streak_value.setStyleSheet(f"color: {color};")
+
+    def _update_heatmap(self, matches: List[Dict[str, Any]]) -> None:
+        counts = [[0] * 24 for _ in range(7)]
+        for m in matches:
+            try:
+                ts = float(m.get("epoch") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts <= 0:
+                continue
+            dt = datetime.fromtimestamp(ts)
+            counts[dt.weekday()][dt.hour] += 1
+        self._heatmap.set_data(counts)
 
     def _update_trend(self, matches: List[Dict[str, Any]]) -> None:
         # Approximate "MMR" by ``rank * 100 + rr`` so promotions show as jumps.

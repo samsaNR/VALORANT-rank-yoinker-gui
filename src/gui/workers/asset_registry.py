@@ -33,6 +33,7 @@ from src.constants import tierDict
 _AGENTS_URL = "https://valorant-api.com/v1/agents?isPlayableCharacter=true"
 _TIERS_URL = "https://valorant-api.com/v1/competitivetiers"
 _SKINS_URL = "https://valorant-api.com/v1/weapons/skins"
+_MAPS_URL = "https://valorant-api.com/v1/maps"
 
 
 def _strip_weapon_suffix(name: str) -> str:
@@ -58,6 +59,7 @@ class AssetRegistry(QObject):
         self._ranks: Dict[int, str] = {}
         self._skin_full: Dict[str, Tuple[int, int, int]] = {}
         self._skin_short: Dict[str, Tuple[int, int, int]] = {}
+        self._maps: Dict[str, str] = {}
         self._pending = 0
 
     # ------------------------------------------------------------ public
@@ -68,6 +70,7 @@ class AssetRegistry(QObject):
             (_AGENTS_URL, self._on_agents),
             (_TIERS_URL, self._on_tiers),
             (_SKINS_URL, self._on_skins),
+            (_MAPS_URL, self._on_maps),
         ):
             self._pending += 1
             request = QNetworkRequest(QUrl(url))
@@ -86,6 +89,11 @@ class AssetRegistry(QObject):
         if not isinstance(rank_idx, int):
             return ""
         return self._ranks.get(rank_idx, "")
+
+    def map_splash_url(self, map_name: str) -> str:
+        if not map_name:
+            return ""
+        return self._maps.get(map_name.strip().lower(), "")
 
     def skin_tier_color(self, display_name: str) -> Optional[Tuple[int, int, int]]:
         if not display_name:
@@ -135,6 +143,20 @@ class AssetRegistry(QObject):
             icon = entry.get("smallIcon") or entry.get("largeIcon")
             if isinstance(tier, int) and icon:
                 self._ranks[tier] = str(icon)
+
+    def _on_maps(self, payload: dict) -> None:
+        for entry in payload.get("data") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("displayName") or "").strip().lower()
+            # Prefer splash (full-bleed art); fall back to listView icon.
+            splash = (
+                entry.get("splash")
+                or entry.get("listViewIconTall")
+                or entry.get("listViewIcon")
+            )
+            if name and splash:
+                self._maps[name] = str(splash)
 
     def _on_skins(self, payload: dict) -> None:
         for entry in payload.get("data") or []:

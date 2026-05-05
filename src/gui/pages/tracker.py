@@ -251,6 +251,50 @@ def _party_color(number: int) -> QColor:
     return QColor(_PARTY_COLORS[(number - 1) % len(_PARTY_COLORS)])
 
 
+class MapHeroFrame(QFrame):
+    """Status card that paints the current map's splash as a frosted backdrop.
+
+    The frame keeps its rounded-rect shape so the painted pixmap is clipped to
+    the card silhouette; we paint a dim overlay on top of the image so foreground
+    text (page title, state pill, badges) stays readable.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._map_pixmap: Optional[QPixmap] = None
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+    def set_map_pixmap(self, pixmap: Optional[QPixmap]) -> None:
+        self._map_pixmap = pixmap if pixmap and not pixmap.isNull() else None
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802 (Qt API)
+        if self._map_pixmap is not None:
+            from PySide6.QtGui import QPainter, QPainterPath, QColor
+
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+            radius = 14.0
+            path = QPainterPath()
+            path.addRoundedRect(self.rect().adjusted(0, 0, -1, -1), radius, radius)
+            painter.setClipPath(path)
+
+            scaled = self._map_pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            # Darken so widgets above stay legible.
+            painter.fillRect(self.rect(), QColor(11, 15, 21, 210))
+        # Let the stylesheet draw the rounded border on top of the bg.
+        super().paintEvent(event)
+
+
 class StatBadge(QFrame):
     """Small panel that shows a label + bold value (used in the status row)."""
 
@@ -288,6 +332,10 @@ class TrackerPage(QWidget):
     view_loadout_requested = Signal(str)
     # Glow ranks: Immortal 1+ and Radiant. NUMBERTORANKS index >= 24.
     GLOW_RANK_THRESHOLD = 24
+    # Smurf heuristic: low account level (<50) combined with a peak rank of
+    # Immortal+ (>= GLOW_RANK_THRESHOLD). Anyone matching is flagged with
+    # a yellow `SMURF?` chip after their name.
+    SMURF_LEVEL_THRESHOLD = 50
 
     AGENT_ICON_SIZE = QSize(22, 22)
     RANK_ICON_SIZE = QSize(20, 20)
@@ -347,8 +395,10 @@ class TrackerPage(QWidget):
         a denser card so the player table gets more vertical space.
         """
 
-        wrapper = QFrame()
+        wrapper = MapHeroFrame()
         wrapper.setObjectName("statusCard")
+        wrapper.setProperty("hero", True)
+        self._status_card = wrapper
         outer = QVBoxLayout(wrapper)
         outer.setContentsMargins(20, 16, 20, 16)
         outer.setSpacing(14)
@@ -516,7 +566,7 @@ class TrackerPage(QWidget):
         header_view.setMinimumSectionSize(40)
         layout.addWidget(self._player_table, 1)
 
-        self._players_empty = self._build_empty_state(
+        self._players_empty = self._build_loading_state(
             "Waiting for game data",
             "Start the tracker and join a match - player rows will appear here.",
         )
@@ -550,6 +600,51 @@ class TrackerPage(QWidget):
         subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle_label.setWordWrap(True)
         layout.addWidget(subtitle_label)
+        return wrapper
+
+    @staticmethod
+    def _build_loading_state(title: str, subtitle: str) -> QWidget:
+        """Empty state with shimmering skeleton rows underneath the text.
+
+        Used in place of plain "Waiting..." copy so the UI feels alive even
+        before the first heartbeat arrives.
+        """
+
+        from src.gui.widgets import SkeletonRow
+
+        wrapper = QFrame()
+        wrapper.setObjectName("card")
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(20, 24, 20, 24)
+        layout.setSpacing(10)
+
+        glyph = QLabel("\u25c8")
+        font = glyph.font()
+        font.setPointSize(22)
+        font.setBold(True)
+        glyph.setFont(font)
+        glyph.setStyleSheet("color: #ff4655;")
+        glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(glyph)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("emptyTitle")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("emptySubtitle")
+        subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle_label.setWordWrap(True)
+        layout.addWidget(subtitle_label)
+
+        # Three "ghost" rows so the layout feels populated.
+        skeleton_box = QVBoxLayout()
+        skeleton_box.setContentsMargins(0, 8, 0, 0)
+        skeleton_box.setSpacing(8)
+        for _ in range(3):
+            skeleton_box.addWidget(SkeletonRow(height=18))
+        layout.addLayout(skeleton_box)
         return wrapper
 
     def _build_chat_panel(self) -> QWidget:
@@ -640,6 +735,7 @@ class TrackerPage(QWidget):
         else:
             map_name = "-"
         self._map_badge.set_value(map_name)
+        self._update_map_hero_background(map_name)
 
         timestamp = payload.get("time")
         if isinstance(timestamp, (int, float)) and timestamp > 0:
@@ -1080,7 +1176,11 @@ class TrackerPage(QWidget):
                     if pix is not None:
                         item.setIcon(QIcon(self._scale_avatar(pix)))
                 if played_with > 0:
-                    item.setText(item.text() + f"  ×{played_with}")
+                    item.setText(item.text() + f"  \u00d7{played_with}")
+                if self._is_smurf(player):
+                    # Yellow warning glyph + suffix so a quick glance flags
+                    # low-level accounts with very high peak ranks.
+                    item.setText(item.text() + "  \u26a0 SMURF?")
                 if is_self:
                     # Mark the local player so the row stands out in lobbies
                     # with 10+ players.
@@ -1146,6 +1246,31 @@ class TrackerPage(QWidget):
 
         for row in self._banner_rows:
             self._player_table.setSpan(row, 0, 1, len(PLAYER_COLUMNS))
+
+    def _is_smurf(self, player: Dict[str, Any]) -> bool:
+        """Heuristic: low-level account with a very high peak rank.
+
+        Anyone whose account level we know to be < 50 *and* whose peak rank
+        is at Immortal 1 or higher (>= 24 in NUMBERTORANKS) is flagged. We
+        deliberately keep this as a "?" to avoid making strong claims; the
+        marker is a hint, not a verdict.
+        """
+
+        level_raw = player.get("level")
+        try:
+            level = int(level_raw) if level_raw is not None else None
+        except (TypeError, ValueError):
+            level = None
+        if level is None or level <= 0 or level >= self.SMURF_LEVEL_THRESHOLD:
+            return False
+        peak_raw = player.get("peakRank")
+        try:
+            peak = int(peak_raw) if peak_raw is not None else None
+        except (TypeError, ValueError):
+            peak = None
+        if peak is None:
+            return False
+        return peak >= self.GLOW_RANK_THRESHOLD
 
     def _apply_self_highlight(self, items: List[QStandardItem]) -> None:
         """Tint the local player's row in red so it pops in the table."""
@@ -1281,6 +1406,14 @@ class TrackerPage(QWidget):
                 "<span style='color:#aab5c5'>"
                 + " \u00b7 ".join(meta_parts)
                 + "</span>"
+            )
+
+        if self._is_smurf(player):
+            level = player.get("level") or "?"
+            peak_name = self._format_rank(player.get("peakRank"))
+            bits.append(
+                f"<span style='color:#f0b429'>\u26a0 SMURF? "
+                f"Level {level}, peak {peak_name}</span>"
             )
 
         if played_with > 0:
@@ -1436,6 +1569,26 @@ class TrackerPage(QWidget):
             Qt.TransformationMode.SmoothTransformation,
         )
 
+    def _update_map_hero_background(self, map_name: str) -> None:
+        """Pull the splash for the current map and paint it on the hero card.
+
+        Falls back to clearing the background if the registry hasn't fetched
+        the maps endpoint yet, or if the heartbeat reports no map (MENUS).
+        """
+
+        if self._asset_registry is None or not hasattr(self, "_status_card"):
+            return
+        if not map_name or map_name == "-":
+            self._status_card.set_map_pixmap(None)
+            return
+        url = self._asset_registry.map_splash_url(map_name)
+        if not url:
+            self._status_card.set_map_pixmap(None)
+            return
+        pixmap = self._image_cache.request(url)
+        if pixmap is not None and not pixmap.isNull():
+            self._status_card.set_map_pixmap(pixmap)
+
     def _agent_icon_url(self, agent: Any) -> str:
         if self._asset_registry is None:
             return ""
@@ -1478,6 +1631,19 @@ class TrackerPage(QWidget):
     def _on_image_ready(self, url: str, pixmap: QPixmap) -> None:
         """Refresh table cells whose deferred image just finished loading."""
 
+        # Hero card map splash.
+        if (
+            hasattr(self, "_status_card")
+            and self._asset_registry is not None
+        ):
+            current_map = self._map_badge._value.text() if self._map_badge else ""
+            if (
+                current_map
+                and current_map != "-"
+                and self._asset_registry.map_splash_url(current_map) == url
+            ):
+                self._status_card.set_map_pixmap(pixmap)
+
         for row in range(self._player_model.rowCount()):
             name_item = self._player_model.item(row, NAME_COLUMN)
             if name_item is not None and name_item.data(PLAYER_CARD_URL_ROLE) == url:
@@ -1509,6 +1675,13 @@ class TrackerPage(QWidget):
         We pre-warm the cache for every visible row so users see the new
         icons populate without having to wait for the next heartbeat.
         """
+
+        # Trigger the map hero load once the maps catalogue is available.
+        current_map = (
+            self._map_badge._value.text() if hasattr(self, "_map_badge") else ""
+        )
+        if current_map:
+            self._update_map_hero_background(current_map)
 
         for row in range(self._player_model.rowCount()):
             agent_item = self._player_model.item(row, AGENT_COLUMN)
