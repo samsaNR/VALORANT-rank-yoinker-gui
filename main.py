@@ -902,6 +902,7 @@ try:
                         )
 
                         heartbeat_data["players"][player["Subject"]] = {
+                            "puuid": player["Subject"],
                             "name": names[player["Subject"]],
                             "partyNumber": partyNum,
                             "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
@@ -1056,13 +1057,21 @@ try:
                                 ]
                             )
 
+                            # In MENUS the only "Players" we see are the user's
+                            # own party (menu.get_party_members above), so any
+                            # extra teammate is by construction a premade.
+                            menu_party_number = 1 if len(Players) >= 2 else 0
                             heartbeat_data["players"][player["Subject"]] = {
+                                "puuid": player["Subject"],
                                 "name": names[player["Subject"]],
+                                "partyNumber": menu_party_number,
                                 "rank": playerRank["rank"],
                                 "peakRank": playerRank["peakrank"],
                                 "peakRankAct": peakRankAct,
                                 "level": player_level,
                                 "rr": rr,
+                                "rrChange": rr_numeric_value,
+                                "afkPenalty": afk_penalty,
                                 "kd": ppstats["kd"],
                                 "headshotPercentage": ppstats["hs"],
                                 "winPercentage": f"{playerRank['wr']} ({playerRank['numberofgames']})",

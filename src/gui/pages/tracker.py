@@ -576,6 +576,14 @@ class TrackerPage(QWidget):
         header_row.addWidget(self._chat_clear_button)
         layout.addLayout(header_row)
 
+        # Tiny status line so users can confirm chat persistence is active
+        # (path on disk + how many messages are currently stored).
+        self._chat_status = QLabel("")
+        self._chat_status.setProperty("muted", True)
+        self._chat_status.setObjectName("chatStatus")
+        self._chat_status.setWordWrap(True)
+        layout.addWidget(self._chat_status)
+
         # Custom scrollable column of chat bubbles, instead of a plain
         # QListWidget with one-line items, so multiline messages, channel
         # pills and timestamps all read more like a modern chat UI.
@@ -702,18 +710,42 @@ class TrackerPage(QWidget):
             self._chat_empty.hide()
             bar = self._chat_scroll.verticalScrollBar()
             bar.setValue(bar.maximum())
+        self._update_chat_status()
 
     def _save_chat_history(self) -> None:
         path = chat_history_path()
         if not path:
+            self._update_chat_status(error="APPDATA not set; can't save")
             return
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(list(self._chat_history), fh, ensure_ascii=False)
-        except OSError:
+        except OSError as exc:
             # Persistence is best-effort: never crash the UI on disk errors.
-            pass
+            self._update_chat_status(error=f"Save failed: {exc}")
+            return
+        self._update_chat_status()
+
+    def _update_chat_status(self, error: str = "") -> None:
+        if not hasattr(self, "_chat_status") or self._chat_status is None:
+            return
+        if error:
+            self._chat_status.setText(error)
+            self._chat_status.setStyleSheet("color: #ff7782;")
+            return
+        path = chat_history_path()
+        count = len(self._chat_history)
+        # Show a short relative path (last two components) so the line stays
+        # readable even when APPDATA is a deep path.
+        if path:
+            short = os.sep.join(path.split(os.sep)[-3:])
+            self._chat_status.setText(
+                f"{count} message(s) saved \u00b7 {short}"
+            )
+        else:
+            self._chat_status.setText(f"{count} message(s) (in-memory only)")
+        self._chat_status.setStyleSheet("")
 
     def _clear_chat_history(self) -> None:
         self._chat_history.clear()
@@ -730,6 +762,7 @@ class TrackerPage(QWidget):
                 os.remove(path)
             except OSError:
                 pass
+        self._update_chat_status()
 
     def _on_chat_toggle(self, hidden: bool) -> None:
         if not hasattr(self, "_body_splitter"):
@@ -828,8 +861,34 @@ class TrackerPage(QWidget):
             r = p.get("rank")
             return int(r) if isinstance(r, int) else -1
 
+        def _party_num(p: Dict[str, Any]) -> int:
+            n = p.get("partyNumber")
+            try:
+                return int(n) if n is not None else 0
+            except (TypeError, ValueError):
+                return 0
+
+        def _sort_team(members: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """Keep premades adjacent: bucket by party id, sort each bucket
+            by rank desc, then sort buckets by their top rank desc."""
+            buckets: Dict[str, List[Dict[str, Any]]] = {}
+            order: List[str] = []
+            for idx, p in enumerate(members):
+                pn = _party_num(p)
+                # Solo players each get a unique bucket so they stay solo.
+                key = f"p-{pn}" if pn > 0 else f"solo-{idx}"
+                if key not in buckets:
+                    buckets[key] = []
+                    order.append(key)
+                buckets[key].append(p)
+            for key in order:
+                buckets[key].sort(key=_rank_idx, reverse=True)
+            order.sort(key=lambda k: _rank_idx(buckets[k][0]), reverse=True)
+            return [p for k in order for p in buckets[k]]
+
         # Group by team (Blue, Red, then anything else such as DM/agent
-        # select), and within each team sort by rank descending.
+        # select), and within each team sort by rank descending while keeping
+        # premade groups adjacent.
         from collections import OrderedDict
 
         groups: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
@@ -843,8 +902,8 @@ class TrackerPage(QWidget):
             if team_label not in ("Blue", "Red"):
                 team_label = "Other"
             groups.setdefault(team_label, []).append(player)
-        for label, members in groups.items():
-            members.sort(key=_rank_idx, reverse=True)
+        for label in list(groups.keys()):
+            groups[label] = _sort_team(groups[label])
 
         self._player_model.removeRows(0, self._player_model.rowCount())
         self._banner_rows = []
@@ -1040,6 +1099,11 @@ class TrackerPage(QWidget):
             row_items.append(item)
         self._apply_team_color(row_items, player.get("team"))
         self._apply_glow(row_items, player.get("rank"))
+        try:
+            party_no = int(player.get("partyNumber") or 0)
+        except (TypeError, ValueError):
+            party_no = 0
+        self._apply_party_highlight(row_items, party_no)
         if is_self:
             self._apply_self_highlight(row_items)
         self._player_model.appendRow(row_items)
@@ -1089,6 +1153,23 @@ class TrackerPage(QWidget):
         brush = QBrush(QColor(255, 70, 85, 56))
         for item in items:
             item.setBackground(brush)
+
+    def _apply_party_highlight(
+        self, items: List[QStandardItem], party_number: int
+    ) -> None:
+        """Tint the whole row + put a brighter accent strip on the left so
+        premade groups read as a single unit in the table."""
+
+        if party_number <= 0 or not items:
+            return
+        color = _party_color(party_number)
+        r, g, b = color.toTuple()[:3]
+        # Soft tint over the whole row.
+        soft = QBrush(QColor(r, g, b, 32))
+        for item in items:
+            item.setBackground(soft)
+        # Brighter accent on the leftmost (Party) cell so it reads as a tag.
+        items[0].setBackground(QBrush(QColor(r, g, b, 90)))
 
     def _cell_for(
         self,
