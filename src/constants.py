@@ -203,7 +203,7 @@ DEFAULT_CONFIG = {
         "leaderboard": True,
         "headshot_percent": True,
         "winrate": True,
-        "kd": False,
+        "kd": True,
         "level": True
     },
     "flags": {

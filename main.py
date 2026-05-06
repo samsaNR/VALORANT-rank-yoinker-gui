@@ -485,20 +485,18 @@ try:
                                         )
 
                         party_icon = ""
+                        partyNum = 0
                         # set party premade icon
                         for party in partyOBJ:
                             if player["Subject"] in partyOBJ[party]:
                                 if party not in partyIcons:
-                                    partyIcons.update(
-                                        {party: PARTYICONLIST[partyCount]}
-                                    )
-                                    # PARTY_ICON
-                                    party_icon = PARTYICONLIST[partyCount]
-                                    partyNum = partyCount + 1
+                                    partyIcons[party] = PARTYICONLIST[partyCount]
                                     partyCount += 1
-                                else:
-                                    # PARTY_ICON
-                                    party_icon = partyIcons[party]
+                                # PARTY_ICON
+                                party_icon = partyIcons[party]
+                                # Stable party index for this party_id.
+                                partyNum = list(partyIcons).index(party) + 1
+                                break
                         playerRank, previousPlayerRank, ppstats = get_or_fetch_rank_and_stats(
                             player["Subject"], coregame_match_id
                         )
@@ -650,12 +648,14 @@ try:
                         heartbeat_data["players"][player["Subject"]] = {
                             "puuid": player["Subject"],
                             "name": names[player["Subject"]],
-                            "partyNumber": partyNum if party_icon != "" else 0,
+                            "partyNumber": partyNum,
                             "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
                             "rank": playerRank["rank"],
                             "peakRank": playerRank["peakrank"],
                             "peakRankAct": peakRankAct,
                             "rr": rr,
+                            "rrChange": rr_numeric_value,
+                            "afkPenalty": afk_penalty,
                             "kd": ppstats["kd"],
                             "headshotPercentage": ppstats["hs"],
                             "winPercentage": f"{playerRank['wr']} ({playerRank['numberofgames']})",
@@ -680,12 +680,29 @@ try:
                             ),
                         }
 
+                        # Resolve the map's display name fresh each match;
+                        # ``current_map`` is captured at startup and stale
+                        # (and historically was sometimes a dict, leaving
+                        # \"{'name': 'Bind', 'splash': '...'}\" in the history).
+                        live_map_name = "N/A"
+                        try:
+                            live_map_id = (
+                                coregame_stats.get("MapID", "").lower()
+                            )
+                            resolved = map_urls.get(live_map_id) if live_map_id else None
+                            if isinstance(resolved, str):
+                                live_map_name = resolved
+                            elif isinstance(resolved, dict) and resolved.get("name"):
+                                live_map_name = str(resolved["name"])
+                        except (AttributeError, KeyError):
+                            pass
+
                         stats.save_data(
                             {
                                 player["Subject"]: {
                                     "name": names[player["Subject"]],
                                     "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
-                                    "map": current_map,
+                                    "map": live_map_name,
                                     "rank": playerRank["rank"],
                                     "rr": rr,
                                     "match_id": coregame.match_id,
@@ -732,21 +749,19 @@ try:
                         )
                         playersLoaded += 1
                         party_icon = ""
+                        partyNum = 0
 
                         # set party premade icon
                         for party in partyOBJ:
                             if player["Subject"] in partyOBJ[party]:
                                 if party not in partyIcons:
-                                    partyIcons.update(
-                                        {party: PARTYICONLIST[partyCount]}
-                                    )
-                                    # PARTY_ICON
-                                    party_icon = PARTYICONLIST[partyCount]
-                                    partyNum = partyCount + 1
-                                else:
-                                    # PARTY_ICON
-                                    party_icon = partyIcons[party]
-                                partyCount += 1
+                                    partyIcons[party] = PARTYICONLIST[partyCount]
+                                    partyCount += 1
+                                # PARTY_ICON
+                                party_icon = partyIcons[party]
+                                # Stable party index for this party_id.
+                                partyNum = list(partyIcons).index(party) + 1
+                                break
                         playerRank, previousPlayerRank, ppstats = get_or_fetch_rank_and_stats(
                             player["Subject"], pregame_match_id
                         )
@@ -904,14 +919,17 @@ try:
                         )
 
                         heartbeat_data["players"][player["Subject"]] = {
+                            "puuid": player["Subject"],
                             "name": names[player["Subject"]],
-                            "partyNumber": partyNum if party_icon != "" else 0,
+                            "partyNumber": partyNum,
                             "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
                             "rank": playerRank["rank"],
                             "peakRank": playerRank["peakrank"],
                             "peakRankAct": peakRankAct,
                             "level": player_level,
                             "rr": rr,
+                            "rrChange": rr_numeric_value,
+                            "afkPenalty": afk_penalty,
                             "kd": ppstats["kd"],
                             "headshotPercentage": ppstats["hs"],
                             "winPercentage": f"{playerRank['wr']} ({playerRank['numberofgames']})",
@@ -1056,13 +1074,21 @@ try:
                                 ]
                             )
 
+                            # In MENUS the only "Players" we see are the user's
+                            # own party (menu.get_party_members above), so any
+                            # extra teammate is by construction a premade.
+                            menu_party_number = 1 if len(Players) >= 2 else 0
                             heartbeat_data["players"][player["Subject"]] = {
+                                "puuid": player["Subject"],
                                 "name": names[player["Subject"]],
+                                "partyNumber": menu_party_number,
                                 "rank": playerRank["rank"],
                                 "peakRank": playerRank["peakrank"],
                                 "peakRankAct": peakRankAct,
                                 "level": player_level,
                                 "rr": rr,
+                                "rrChange": rr_numeric_value,
+                                "afkPenalty": afk_penalty,
                                 "kd": ppstats["kd"],
                                 "headshotPercentage": ppstats["hs"],
                                 "winPercentage": f"{playerRank['wr']} ({playerRank['numberofgames']})",
