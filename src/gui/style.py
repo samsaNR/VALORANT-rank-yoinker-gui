@@ -348,6 +348,50 @@ QLabel#streakValue {{
     letter-spacing: 0.5px;
 }}
 
+QFrame#kpiCard {{
+    background-color: rgba(22, 27, 37, 220);
+    border: 1px solid rgba(255, 255, 255, 16);
+    border-radius: 12px;
+}}
+
+QFrame#kpiCard[tone="win"] {{
+    background-color: rgba(95, 207, 128, 24);
+    border: 1px solid rgba(95, 207, 128, 100);
+}}
+
+QFrame#kpiCard[tone="loss"] {{
+    background-color: rgba(255, 70, 85, 24);
+    border: 1px solid rgba(255, 70, 85, 110);
+}}
+
+QLabel#kpiLabel {{
+    color: {MUTED};
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+}}
+
+QLabel#kpiValue {{
+    color: {TEXT};
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+}}
+
+QFrame#kpiCard[tone="win"] QLabel#kpiValue {{
+    color: {SUCCESS};
+}}
+
+QFrame#kpiCard[tone="loss"] QLabel#kpiValue {{
+    color: {ACCENT};
+}}
+
+QLabel#kpiSubLabel {{
+    color: {MUTED};
+    font-size: 11px;
+    font-weight: 500;
+}}
+
 QFrame#mapHeroOverlay {{
     border-radius: 14px;
     background-color: rgba(11, 15, 21, 200);

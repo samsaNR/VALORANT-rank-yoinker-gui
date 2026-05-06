@@ -680,12 +680,29 @@ try:
                             ),
                         }
 
+                        # Resolve the map's display name fresh each match;
+                        # ``current_map`` is captured at startup and stale
+                        # (and historically was sometimes a dict, leaving
+                        # \"{'name': 'Bind', 'splash': '...'}\" in the history).
+                        live_map_name = "N/A"
+                        try:
+                            live_map_id = (
+                                coregame_stats.get("MapID", "").lower()
+                            )
+                            resolved = map_urls.get(live_map_id) if live_map_id else None
+                            if isinstance(resolved, str):
+                                live_map_name = resolved
+                            elif isinstance(resolved, dict) and resolved.get("name"):
+                                live_map_name = str(resolved["name"])
+                        except (AttributeError, KeyError):
+                            pass
+
                         stats.save_data(
                             {
                                 player["Subject"]: {
                                     "name": names[player["Subject"]],
                                     "agent": agent_dict.get(player["CharacterID"].lower(), "Unknown"),
-                                    "map": current_map,
+                                    "map": live_map_name,
                                     "rank": playerRank["rank"],
                                     "rr": rr,
                                     "match_id": coregame.match_id,

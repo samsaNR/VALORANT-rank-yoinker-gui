@@ -56,6 +56,31 @@ def _rank_label(rank_idx: Any) -> str:
     return str(rank_idx)
 
 
+def _coerce_map_label(value: Any) -> str:
+    """Map values were historically stored as a ``{'name': ..., 'splash': ...}``
+    dict (and even as a stringified dict), so normalise to a clean display
+    label here.
+    """
+
+    if isinstance(value, dict):
+        name = value.get("name")
+        return _strip_ansi(str(name or "\u2014"))
+    if isinstance(value, str):
+        stripped = value.strip()
+        # Fallback for legacy entries serialised as a Python dict via repr().
+        if stripped.startswith("{") and "'name'" in stripped:
+            try:
+                import ast
+
+                parsed = ast.literal_eval(stripped)
+                if isinstance(parsed, dict) and parsed.get("name"):
+                    return _strip_ansi(str(parsed["name"]))
+            except (ValueError, SyntaxError):
+                pass
+        return _strip_ansi(stripped or "\u2014")
+    return "\u2014"
+
+
 def _format_when(epoch: Any) -> str:
     try:
         ts = float(epoch)
@@ -220,7 +245,7 @@ class HistoryPage(QWidget):
             row: List[QStandardItem] = []
             cells = {
                 "when": _format_when(match.get("epoch")),
-                "map": _strip_ansi(str(match.get("map") or "\u2014")),
+                "map": _coerce_map_label(match.get("map")),
                 "agent": _strip_ansi(str(match.get("agent") or "\u2014")),
                 "rank": _rank_label(match.get("rank")),
                 "rr": str(match.get("rr") or "\u2014"),

@@ -269,6 +269,180 @@ class _PlayHeatmap(QWidget):
         return super().event(event)
 
 
+class _BarBreakdown(QWidget):
+    """Horizontal bar list of ``(label, played, win%)`` rows.
+
+    Each row renders the agent/map name on the left, a horizontal track
+    showing winrate (red \u2192 yellow \u2192 green gradient based on the actual
+    win %) and the absolute counts (W-L \u2022 played) on the right. This is
+    much more scannable than a 5-column table when the user only cares
+    about \"which agent / map am I best on\".
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._rows: List[Tuple[str, int, int, int]] = []
+        self._max_played = 0
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(80)
+
+    def set_rows(self, rows: List[Tuple[str, int, int, int]]) -> None:
+        self._rows = list(rows)
+        self._max_played = max((r[1] for r in self._rows), default=0)
+        # Resize so each row gets ~26px.
+        target = max(80, len(self._rows) * 28 + 12)
+        self.setMinimumHeight(target)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+
+        if not self._rows:
+            painter.setPen(QColor("#8b95a3"))
+            painter.setFont(QFont("Segoe UI", 9))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No matches recorded yet",
+            )
+            return
+
+        label_w = 130
+        right_w = 110
+        row_h = 26
+        bar_pad_y = 6
+        track_left = label_w + 8
+        track_right = self.width() - right_w - 8
+        track_w = max(40, track_right - track_left)
+
+        font_label = QFont("Segoe UI", 10)
+        font_label.setBold(True)
+        font_meta = QFont("Segoe UI", 9)
+
+        for idx, (label, played, wins, losses) in enumerate(self._rows):
+            y = idx * row_h
+            decisive = wins + losses
+            wr = (wins / decisive * 100) if decisive else 0.0
+
+            # Label.
+            painter.setFont(font_label)
+            painter.setPen(QColor("#dee5ee"))
+            painter.drawText(
+                0,
+                y,
+                label_w,
+                row_h,
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                label,
+            )
+
+            # Bar track (background).
+            track_rect_y = y + bar_pad_y
+            track_rect_h = row_h - 2 * bar_pad_y
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#1c2230"))
+            painter.drawRoundedRect(
+                track_left,
+                track_rect_y,
+                track_w,
+                track_rect_h,
+                track_rect_h / 2,
+                track_rect_h / 2,
+            )
+
+            # Filled portion. Width scaled by the *played* count relative
+            # to the most-played agent/map - so a 100% winrate from a
+            # single match doesn't look as dominant as 70% over 30 games.
+            if self._max_played > 0:
+                width_ratio = played / self._max_played
+            else:
+                width_ratio = 0
+            filled_w = int(track_w * width_ratio)
+            if filled_w > 0 and decisive > 0:
+                color = self._wr_color(wr)
+                painter.setBrush(color)
+                painter.drawRoundedRect(
+                    track_left,
+                    track_rect_y,
+                    filled_w,
+                    track_rect_h,
+                    track_rect_h / 2,
+                    track_rect_h / 2,
+                )
+
+            # Right-side meta: W-L \u2022 played \u2022 win%.
+            painter.setFont(font_meta)
+            painter.setPen(QColor("#aab5c5"))
+            wr_text = f"{wr:.0f}%" if decisive else "\u2014"
+            meta_text = f"{wins}\u2013{losses}  \u2022  {played} matches  \u2022  {wr_text}"
+            painter.drawText(
+                track_right + 8,
+                y,
+                right_w - 8,
+                row_h,
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                meta_text,
+            )
+
+    @staticmethod
+    def _wr_color(wr: float) -> QColor:
+        if wr >= 60:
+            return QColor("#5fcf80")
+        if wr >= 50:
+            return QColor("#7fc7ff")
+        if wr >= 40:
+            return QColor("#f0b429")
+        return QColor("#ff4655")
+
+
+class _KpiCard(QFrame):
+    """Compact frosted-glass tile used in the Stats hero metric strip."""
+
+    def __init__(
+        self,
+        label: str,
+        value: str = "\u2014",
+        sublabel: str = "",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("kpiCard")
+        self.setProperty("tone", "neutral")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(4)
+
+        self._label = QLabel(label.upper())
+        self._label.setObjectName("kpiLabel")
+        layout.addWidget(self._label)
+
+        self._value = QLabel(value)
+        self._value.setObjectName("kpiValue")
+        layout.addWidget(self._value)
+
+        self._sub = QLabel(sublabel)
+        self._sub.setObjectName("kpiSubLabel")
+        layout.addWidget(self._sub)
+
+        if not sublabel:
+            self._sub.hide()
+
+    def set_value(self, value: str, tone: str = "neutral", sublabel: str = "") -> None:
+        self._value.setText(value)
+        if sublabel:
+            self._sub.setText(sublabel)
+            self._sub.show()
+        else:
+            self._sub.hide()
+        if self.property("tone") != tone:
+            self.setProperty("tone", tone)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+
 class StatsPage(QWidget):
     """RR trend + winrate breakdowns by agent and by map."""
 
@@ -294,10 +468,11 @@ class StatsPage(QWidget):
         matches = self._collect_matches()
         self._update_summary(matches)
         self._update_streak(matches)
+        self._update_kpis(matches)
         self._update_trend(matches)
         self._update_heatmap(matches)
-        self._update_breakdown(self._agent_model, self._aggregate(matches, "agent"))
-        self._update_breakdown(self._map_model, self._aggregate(matches, "map"))
+        self._agent_bars.set_rows(self._aggregate(matches, "agent"))
+        self._map_bars.set_rows(self._aggregate(matches, "map"))
 
     # ------------------------------------------------------- layout
     def _build_layout(self) -> None:
@@ -341,31 +516,50 @@ class StatsPage(QWidget):
         toolbar.addWidget(refresh_btn)
         root.addLayout(toolbar)
 
+        # KPI strip - four pulse metrics the user wants to see at a glance.
+        kpi_row = QHBoxLayout()
+        kpi_row.setSpacing(12)
+        self._kpi_played = _KpiCard("Matches", "0", "this season")
+        self._kpi_winrate = _KpiCard("Win rate", "\u2014%", "0\u20130")
+        self._kpi_delta = _KpiCard("Net RR", "+0", "all-time")
+        self._kpi_streak = _KpiCard("Current streak", "\u2014", "")
+        for kpi in (
+            self._kpi_played,
+            self._kpi_winrate,
+            self._kpi_delta,
+            self._kpi_streak,
+        ):
+            kpi.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            kpi_row.addWidget(kpi, 1)
+        root.addLayout(kpi_row)
+
+        # Two-column grid: trend + heatmap on top, breakdowns below.
+        upper = QGridLayout()
+        upper.setHorizontalSpacing(16)
+        upper.setVerticalSpacing(0)
+
         self._trend = _RRTrendChart()
-        root.addWidget(card(self._trend, title="RR over time"))
+        upper.addWidget(card(self._trend, title="RR over time"), 0, 0)
 
         self._heatmap = _PlayHeatmap()
-        root.addWidget(card(self._heatmap, title="When you play"))
+        upper.addWidget(card(self._heatmap, title="When you play"), 0, 1)
+        upper.setColumnStretch(0, 3)
+        upper.setColumnStretch(1, 2)
+        root.addLayout(upper)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(0)
+        breakdowns = QGridLayout()
+        breakdowns.setHorizontalSpacing(16)
+        breakdowns.setVerticalSpacing(0)
 
-        self._agent_model = QStandardItemModel(0, 5, self)
-        self._agent_model.setHorizontalHeaderLabels(
-            ["Agent", "Played", "W", "L", "Win %"]
-        )
-        agent_view = self._build_table(self._agent_model)
-        grid.addWidget(card(agent_view, title="By agent"), 0, 0)
+        self._agent_bars = _BarBreakdown()
+        breakdowns.addWidget(card(self._agent_bars, title="By agent"), 0, 0)
 
-        self._map_model = QStandardItemModel(0, 5, self)
-        self._map_model.setHorizontalHeaderLabels(
-            ["Map", "Played", "W", "L", "Win %"]
-        )
-        map_view = self._build_table(self._map_model)
-        grid.addWidget(card(map_view, title="By map"), 0, 1)
+        self._map_bars = _BarBreakdown()
+        breakdowns.addWidget(card(self._map_bars, title="By map"), 0, 1)
 
-        root.addLayout(grid, 1)
+        root.addLayout(breakdowns, 1)
 
     @staticmethod
     def _build_table(model: QStandardItemModel) -> QTableView:
@@ -452,6 +646,47 @@ class StatsPage(QWidget):
             f"{len(matches)} matches \u2022 W:{wins} / L:{losses} \u2022 \u0394RR {sign}{total_delta}"
         )
 
+    def _update_kpis(self, matches: List[Dict[str, Any]]) -> None:
+        """Top-of-page hero metrics: total played, winrate, net RR, streak."""
+
+        total = len(matches)
+        wins = sum(
+            1 for m in matches if isinstance(m.get("_delta"), int) and m["_delta"] > 0
+        )
+        losses = sum(
+            1 for m in matches if isinstance(m.get("_delta"), int) and m["_delta"] < 0
+        )
+        decisive = wins + losses
+        net = sum(
+            int(m["_delta"]) for m in matches if isinstance(m.get("_delta"), int)
+        )
+
+        self._kpi_played.set_value(
+            str(total),
+            tone="neutral",
+            sublabel=("recorded locally" if total else "no data yet"),
+        )
+
+        if decisive:
+            wr = wins / decisive * 100
+            tone = "win" if wr >= 55 else "loss" if wr < 45 else "neutral"
+            self._kpi_winrate.set_value(
+                f"{wr:.0f}%",
+                tone=tone,
+                sublabel=f"{wins}\u2013{losses} decisive",
+            )
+        else:
+            self._kpi_winrate.set_value("\u2014%", tone="neutral", sublabel="0\u20130")
+
+        if net != 0:
+            tone = "win" if net > 0 else "loss"
+            sign = "+" if net > 0 else ""
+            self._kpi_delta.set_value(
+                f"{sign}{net}", tone=tone, sublabel="all-time"
+            )
+        else:
+            self._kpi_delta.set_value("0", tone="neutral", sublabel="all-time")
+
     def _update_streak(self, matches: List[Dict[str, Any]]) -> None:
         """Walk back from the latest match counting consecutive same-sign deltas."""
 
@@ -483,6 +718,10 @@ class StatsPage(QWidget):
             self._streak_label.setText("Streak")
             self._streak_value.setText("\u2014")
             self._streak_value.setStyleSheet("color: #aab5c5;")
+            if hasattr(self, "_kpi_streak"):
+                self._kpi_streak.set_value(
+                    "\u2014", tone="neutral", sublabel="even"
+                )
         else:
             prefix = "Win streak" if outcome == "win" else "Loss streak"
             color = "#5fcf80" if outcome == "win" else "#ff4655"
@@ -490,6 +729,12 @@ class StatsPage(QWidget):
             self._streak_label.setText(prefix)
             self._streak_value.setText(f"{arrow}{streak}")
             self._streak_value.setStyleSheet(f"color: {color};")
+            if hasattr(self, "_kpi_streak"):
+                self._kpi_streak.set_value(
+                    f"{arrow}{streak}",
+                    tone="win" if outcome == "win" else "loss",
+                    sublabel="wins in a row" if outcome == "win" else "losses in a row",
+                )
 
     def _update_heatmap(self, matches: List[Dict[str, Any]]) -> None:
         counts = [[0] * 24 for _ in range(7)]
@@ -524,7 +769,20 @@ class StatsPage(QWidget):
     ) -> List[Tuple[str, int, int, int]]:
         buckets: Dict[str, Dict[str, int]] = {}
         for m in matches:
-            label = _strip_ansi(m.get(key)) or "\u2014"
+            raw = m.get(key)
+            # Maps were historically stored as dicts ({'name', 'splash'})
+            # so unwrap to a clean display name before bucketing.
+            if isinstance(raw, dict):
+                raw = raw.get("name") or "\u2014"
+            elif isinstance(raw, str) and raw.startswith("{") and "'name'" in raw:
+                try:
+                    import ast
+                    parsed = ast.literal_eval(raw)
+                    if isinstance(parsed, dict) and parsed.get("name"):
+                        raw = parsed["name"]
+                except (ValueError, SyntaxError):
+                    pass
+            label = _strip_ansi(raw) or "\u2014"
             bucket = buckets.setdefault(
                 label, {"played": 0, "wins": 0, "losses": 0}
             )

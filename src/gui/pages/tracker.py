@@ -1339,8 +1339,10 @@ class TrackerPage(QWidget):
             value = player.get("headshotPercentage")
             return str(value) if value not in (None, "") else "-"
         if key == "kd":
-            if not table_flags.get("kd", True):
-                return ""
+            # Always show whatever main.py shipped in the heartbeat. The
+            # ``kd`` table flag only controls whether the tracker bothers
+            # to fetch per-match stats; once we have a value, hiding it
+            # in the GUI just confuses people.
             value = player.get("kd")
             return str(value) if value not in (None, "") else "-"
         if key == "level":
